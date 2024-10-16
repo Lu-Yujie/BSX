@@ -1,0 +1,487 @@
+From 13852d46da788598ef596cdafa9aee1130690eac Mon Sep 17 00:00:00 2001
+From: bsx.mail
+Date: Wed, 16 Oct 2024 20:16:59 +0800
+Subject: [PATCH] Support similar batches grouping
+
+---
+ configuration/config.h     |   4 +
+ matching/EvaluateQuery.cpp | 237 ++++++++++++++++++++++++++++++++++++-
+ matching/EvaluateQuery.h   |   2 +
+ utility/bsx/bsx.h          |  73 ++++++++++++
+ 4 files changed, 314 insertions(+), 2 deletions(-)
+
+diff --git a/configuration/config.h b/configuration/config.h
+index 0ddc087..353bb5a 100644
+--- a/configuration/config.h
++++ b/configuration/config.h
+@@ -49,6 +49,10 @@
+  */
+ // #define ANALYZE_DUPLICATE
+ 
++/**
++ * Define BSX_SIM_THRESHOLD to change the similiarity threshold, 100 means identical.
++ */
++#define BSX_SIM_THRESHOLD 50
+ 
+ #define PRINT_SEPARATOR "------------------------------"
+ 
+diff --git a/matching/EvaluateQuery.cpp b/matching/EvaluateQuery.cpp
+index a5ed58e..6e56eba 100644
+--- a/matching/EvaluateQuery.cpp
++++ b/matching/EvaluateQuery.cpp
+@@ -288,6 +288,10 @@ void EvaluateQuery::releaseBuffer(ui q_num, ui *idx, ui *idx_count, ui *embeddin
+     delete[] bn;
+ }
+ 
++#if BSX_SIM_THRESHOLD != 100
++SimInfo* BatchInfo::sim_info = nullptr;
++#endif
++
+ /**
+  * use bsx method
+ */
+@@ -308,6 +312,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+     // new index structure, update in time, 24-3-7
+     BSXIndex index(query_graph, data_graph, edge_matrix, candidates, candidates_count, num_cover);
+     auto& batch_info = index.batch_info;
++    auto& max_candidates_num = index.max_can_num_;
+ 
+     // auxiliary data structure
+     auto& visited_u = index.visited_u;
+@@ -320,6 +325,29 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+     visited_u[start_vertex] = true;
+     auto& level_embeddings = index.level_embeddings_;
+ 
++#if BSX_SIM_THRESHOLD != 100
++    BatchInfo::sim_info = new SimInfo();
++    auto& enable_sb = BatchInfo::sim_info->enable_;
++    auto& sim_batches = BatchInfo::sim_info->sim_batches_;
++    auto& sb_offset = BatchInfo::sim_info->offset_;
++    auto& sb_num = BatchInfo::sim_info->num_;
++    auto& sb_idxs = BatchInfo::sim_info->idxs_;
++    auto& sb_valid = BatchInfo::sim_info->valid_;
++    auto& sb_max_diff = BatchInfo::sim_info->max_diff_;
++    auto& sb_diff_unbrs = BatchInfo::sim_info->diff_unbrs_;
++    auto& sb_diff_unbrs_cnt = BatchInfo::sim_info->diff_unbrs_cnt_;
++    auto& sb_same_or_diff = BatchInfo::sim_info->same_or_diff_;
++    auto& sb_judge_nbrs = BatchInfo::sim_info->judge_nbrs_;
++    auto& batches_processed = BatchInfo::sim_info->batches_processed_;
++    if ((query_graph->getGraphMaxDegree() - 1) * (1 - BSX_SIM_THRESHOLD * 0.01) >= 1) {
++        // allowed max different u_nbrs is less than 1
++        enable_sb = true;
++    }
++    if (enable_sb) {
++        BatchInfo::sim_info->init(query_graph, max_candidates_num);
++    }
++#endif
++
+     // init info of start vertex
+     batch_info[start_vertex].add();
+     bsxComEqBatch(index, start_vertex);
+@@ -327,6 +355,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+     index.valid_cans_[start_vertex].push(new VertexID[batch_info[start_vertex].maxCnt_.top()]);
+     index.valid_cnt_[start_vertex].push(0);
+ 
++#if BSX_SIM_THRESHOLD != 100
++    if (enable_sb) {
++        if (sb_max_diff[start_vertex]) bsxComSimBatch(index, start_vertex);
++    }
++#endif
++
+ #ifdef ANALYZE_DUPLICATE
+     auto g_name = query_graph->g_name;
+     size_t last_slash_pos = g_name.find_last_of('/');
+@@ -353,6 +387,20 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+     while (true) {
+         while (batch_info[depth2u[cur_depth]].idx_.top() < batch_info[depth2u[cur_depth]].num_.top()) {
+             VertexID u = depth2u[cur_depth];
++#if BSX_SIM_THRESHOLD != 100
++            // do not judge sb_valid(just store current state)
++            // do not process last cover_vertex
++            if (enable_sb && sb_max_diff[u] && cur_depth < num_cover - 1) {
++                while(batches_processed[u][batch_info[depth2u[cur_depth]].idx_.top()]
++                      && batch_info[depth2u[cur_depth]].idx_.top() < batch_info[depth2u[cur_depth]].num_.top()) {
++                    batch_info[depth2u[cur_depth]].idx_.top()++;
++                }
++                if (batch_info[depth2u[cur_depth]].idx_.top() >= batch_info[depth2u[cur_depth]].num_.top()) {
++                    break;
++                }
++                batches_processed[u][batch_info[depth2u[cur_depth]].idx_.top()] = true;
++            }
++#endif
+             ui cur_batch_cnt;
+             VertexID* cur_batch = batch_info[u].cur_batch(cur_batch_cnt);
+ 
+@@ -366,6 +414,15 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+ 
+             VertexID failed_u = bsxRefine(index, u);
+             if (failed_u != (ui)-1) {  // no valid cans for next depth
++#if BSX_SIM_THRESHOLD != 100
++                if (enable_sb) {
++                    // process the diff_nbrs of fail_u
++                    for (ui i = 0; i < sb_diff_unbrs_cnt[failed_u]; i++) {
++                        auto& sb_diff_unbr = sb_diff_unbrs[failed_u][i];
++                        sb_valid[sb_diff_unbr] = false;
++                    }
++                }
++#endif
+                 continue;
+             }
+ 
+@@ -403,6 +460,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+                 mpz_add(embedding_cnt, embedding_cnt, level_embeddings);
+                 // next batch
+                 bsxDeRefine(index);
++#if BSX_SIM_THRESHOLD != 100
++                // do not process vertex conlicts
++                if (enable_sb) {
++                    memset(sb_valid, false, sizeof(bool)*q_num);
++                }
++#endif
+             } else {
+                 cur_depth++;
+                 VertexID cur_u = bsxGenNxtU(index, order, cur_depth, num_cover);
+@@ -416,6 +479,17 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+                 index.valid_cans_[cur_u].push(new VertexID[batch_info[cur_u].maxCnt_.top()]);
+                 index.valid_cnt_[cur_u].push(0);
+                 visited_u[cur_u] = true;
++#if BSX_SIM_THRESHOLD != 100
++                if (enable_sb) {
++                    if (sb_max_diff[cur_u] && cur_depth < num_cover - 1)
++                        bsxComSimBatch(index, cur_u);
++                    // process the diff_nbrs of cur_u
++                    for (ui i = 0; i < sb_diff_unbrs_cnt[cur_u]; i++) {
++                        auto& sb_diff_unbr = sb_diff_unbrs[cur_u][i];
++                        sb_valid[sb_diff_unbr] = false;
++                    }
++                }
++#endif
+             }
+         }
+ 
+@@ -428,6 +502,34 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+         depth2u.resize(cur_depth+1);
+         visited_u[last_u] = false;
+ 
++#if BSX_SIM_THRESHOLD != 100  // clear the diff nbrs
++        if (enable_sb && sb_max_diff[last_u] && cur_depth + 1 < num_cover - 1) {
++            auto last_b_num = batch_info[last_u].num_.top();
++            if (last_b_num != 0) {
++                ui unbrs_count;
++                const ui *unbrs = index.q_graph_->getVertexNeighbors(last_u, unbrs_count);
++                ui need_cnt = unbrs_count - sb_max_diff[last_u];
++                for (ui i = 0; i < unbrs_count; i++) {
++                    auto& unbr = unbrs[i];
++                    if (visited_u[unbr]) continue;
++                    if (!need_cnt) {
++                        sb_diff_unbrs_cnt[unbr]--;
++                    } else {
++                        need_cnt--;
++                    }
++                }
++            }
++            if (sb_valid[cur_u]) {
++                auto b_idx = batch_info[cur_u].idx_.top() - 1;
++                auto sb_idx = sb_idxs[cur_u][b_idx] - 1;
++                auto sb_cnt = sb_offset[cur_u][sb_idx + 1] - sb_offset[cur_u][sb_idx];
++                for (ui i = 0; i < sb_cnt; i++) {
++                    auto& batch_idx = sim_batches[cur_u][sb_offset[cur_u][sb_idx]+i];
++                    batches_processed[cur_u][batch_idx] = true;
++                }
++            }
++        }
++#endif
+         batch_info[last_u].pop();
+         delete[] index.valid_cans_[last_u].top();
+         index.valid_cans_[last_u].pop();
+@@ -438,6 +540,10 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+     // Release the buffer.
+     EXIT:
+ 
++#if BSX_SIM_THRESHOLD != 100
++    delete BatchInfo::sim_info;
++#endif
++
+ #ifdef ANALYZE_DUPLICATE
+     for (ui i = 1; i < q_num; i++) { 
+         out_files[i-1].close();
+@@ -675,6 +781,9 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+     auto& nodes = index.valid_cans_[u].top();
+     auto num_idxs = idxs.size();
+     auto& batches = index.batch_info[u].nodes_.top();
++#if BSX_SIM_THRESHOLD != 100
++    auto& enable_sb = BatchInfo::sim_info->enable_;
++#endif
+     auto& offset = index.batch_info[u].offset_.top();
+     auto& cnt = index.batch_info[u].cnt_.top();
+     auto& num = index.batch_info[u].num_.top();
+@@ -692,6 +801,18 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+             auto& unbr = unbrs[unbr_idx];
+             auto& edges = index.index_[u][unbr].top();
+             if (edges->offset_[idx+1] - edges->offset_[idx] == 0) {
++#if BSX_SIM_THRESHOLD != 100
++                if (enable_sb) {
++                    auto& sb_valid = BatchInfo::sim_info->valid_;
++                    auto& sb_diff_unbrs = BatchInfo::sim_info->diff_unbrs_;
++                    auto& sb_diff_unbrs_cnt = BatchInfo::sim_info->diff_unbrs_cnt_;
++                    // process the diff_nbrs of fail_u
++                    for (ui i = 0; i < sb_diff_unbrs_cnt[unbr]; i++) {
++                        auto& sb_diff_unbr = sb_diff_unbrs[unbr][i];
++                        sb_valid[sb_diff_unbr] = false;
++                    }
++                }
++#endif
+                 batch_idx[i] = (ui)-1;
+                 break;
+             }
+@@ -702,10 +823,17 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+     for (ui i = 0; i < num_idxs; i++) {
+         auto& idx = idxs[i];
+         if (batch_idx[i] != 0) continue;
+-        batch_idx[i] = batch_cnt++;
++        batch_idx[i] = batch_cnt;
+         offset[num] = num == 0 ? 0 : offset[num-1]+cnt[num-1];  // set offset of cur_batch
+         cnt[num] = 1;
+         batches[offset[num]] = nodes[idx];
++#if BSX_SIM_THRESHOLD != 100
++        if (enable_sb) {
++            auto& enable_u_sb = BatchInfo::sim_info->max_diff_[u];
++            auto& batches_idxs = BatchInfo::sim_info->batches_idxs_[u];
++            if (enable_u_sb) batches_idxs[offset[num]] = idx;
++        }
++#endif
+         for (ui j = i+1; j < num_idxs; j++) {
+             if (batch_idx[j] != 0) continue;
+             auto ev_idx = idxs[j];
+@@ -729,7 +857,15 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+             }
+             if (equ == true) {
+                 batch_idx[j] = batch_cnt;
+-                batches[offset[num]+(cnt[num]++)] = nodes[ev_idx];
++                batches[offset[num]+cnt[num]] = nodes[ev_idx];
++#if BSX_SIM_THRESHOLD != 100
++                if (enable_sb) {
++                    auto& enable_u_sb = BatchInfo::sim_info->max_diff_[u];
++                    auto& batches_idxs = BatchInfo::sim_info->batches_idxs_[u];
++                    if (enable_u_sb) batches_idxs[offset[num]+cnt[num]] = ev_idx;
++                }
++#endif
++                cnt[num]++;
+             }
+         }
+         // process max_cnt
+@@ -737,10 +873,107 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+         // no need for sort, because the idxs have been sorted and this fun. will not break it
+         // std::sort(batch+offset[num], batch+(offset[num]+cnt[num]));
+         num++;
++        batch_cnt++;
+     }
+     delete[] batch_idx;
+ }
+ 
++// compute sim_batches based on the equal batches
++void
++EvaluateQuery::bsxComSimBatch(BSXIndex& index, VertexID u) {
++#if BSX_SIM_THRESHOLD != 100
++    static auto q_num = index.q_graph_->getVerticesCount();
++    static ui judge_nbrs_cnt;
++    auto& max_diff = BatchInfo::sim_info->max_diff_[u];
++    auto& sb_valid = BatchInfo::sim_info->valid_;
++
++    auto& b_idxs = BatchInfo::sim_info->batches_idxs_[u];
++    auto b_num = index.batch_info[u].num_.top();
++    auto b_fst = index.batch_info[u].offset_.top();  // use the 1st as the representation
++
++    if (max_diff == 0 || b_num == 0) return;
++    sb_valid[u] = true;
++
++    auto& sim_batches = BatchInfo::sim_info->sim_batches_[u];
++    auto& offset = BatchInfo::sim_info->offset_[u];
++    auto& num = BatchInfo::sim_info->num_[u];
++    auto& sb_idxs = BatchInfo::sim_info->idxs_[u];
++    auto& diff_unbrs = BatchInfo::sim_info->diff_unbrs_;
++    auto& diff_unbrs_cnt = BatchInfo::sim_info->diff_unbrs_cnt_;
++    auto& visited_u = index.visited_u;
++    auto& same_or_diff = BatchInfo::sim_info->same_or_diff_[u];
++    memset(same_or_diff, false, sizeof(bool)*q_num);
++    auto& judge_nbrs = BatchInfo::sim_info->judge_nbrs_;
++    judge_nbrs_cnt = 0;
++    auto& batches_processed = BatchInfo::sim_info->batches_processed_[u];
++    memset(batches_processed, false, sizeof(bool)*b_num);
++    // compute the nbrs that should be the same(with the same cans in these nbrs)
++    ui matched_nbrs = 0;
++    ui unbrs_count;
++    const ui *unbrs = index.q_graph_->getVertexNeighbors(u, unbrs_count);
++    ui need_cnt = unbrs_count - max_diff;
++    for (ui i = 0; i < unbrs_count; i++) {
++        auto& unbr = unbrs[i];
++        if (visited_u[unbr]) {
++            matched_nbrs++;
++            continue;
++        }
++        if (!need_cnt) {
++            same_or_diff[unbr] = true;
++            diff_unbrs[unbr][diff_unbrs_cnt[unbr]++] = u;
++        } else {
++            need_cnt--;
++            judge_nbrs[judge_nbrs_cnt++] = unbr;
++        }
++    }
++    if (judge_nbrs_cnt + matched_nbrs == unbrs_count) {
++        sb_valid[u] = false;
++        return;
++    }
++
++    // 0 -- un-processed
++    memset(sb_idxs, 0, sizeof(ui)*b_num);
++
++    num = 1;
++    offset[0] = 0;
++    for (ui i = 0; i < b_num; i++) {
++        auto& b_idx = b_idxs[b_fst[i]];
++        if (sb_idxs[i] != 0) continue;
++        sb_idxs[i] = num;
++        offset[num] = offset[num-1];  // set offset of cur_batch
++        sim_batches[offset[num]++] = i;
++        for (ui j = i+1; j < b_num; j++) {
++            if (sb_idxs[j] != 0) continue;
++            auto sim_idx = b_idxs[b_fst[j]];
++            bool sim = true;
++            // compare the nbrs
++            for (ui unbr_idx = 0; unbr_idx < judge_nbrs_cnt; unbr_idx++) {
++                VertexID unbr = judge_nbrs[unbr_idx];
++                auto& edges = index.index_[u][unbr].top();
++                if (edges->offset_[b_idx+1]-edges->offset_[b_idx]
++                    != edges->offset_[sim_idx+1] - edges->offset_[sim_idx]) {
++                    sim = false;
++                    break;
++                }
++                for (ui u2 = 0; u2 < edges->offset_[b_idx+1] - edges->offset_[b_idx]; u2++) {
++                    if (edges->edge_[u2+edges->offset_[b_idx]] != edges->edge_[u2+edges->offset_[sim_idx]]) {
++                        sim = false;
++                        break;
++                    }
++                }
++                if (sim == false) break;
++            }
++            if (sim == true) {
++                sb_idxs[j] = num;
++                sim_batches[offset[num]++] = j;
++            }
++        }
++        num++;
++    }
++#endif
++    return;
++}
++
+ // equ-batch refine, just process first v of valid_cans, because of they are equ
+ // if success, return -1, else return failed uId
+ ui
+diff --git a/matching/EvaluateQuery.h b/matching/EvaluateQuery.h
+index 480d4a5..98a574b 100644
+--- a/matching/EvaluateQuery.h
++++ b/matching/EvaluateQuery.h
+@@ -45,6 +45,8 @@ private:
+ 
+     static void bsxComEqBatch(BSXIndex& index, VertexID u);
+ 
++    static void bsxComSimBatch(BSXIndex& index, VertexID u);
++
+     static ui bsxSepDiff(std::vector<VertexID> &v_cans, const ui *indep_con_cnt, int forward_idx, int backward_idx);
+ 
+     static void bsxEnumerate4Parts(ui **&sep_flags, const VertexID* nodes, ui num_nodes, std::vector<std::vector<VertexID>>& cans, bool *&visited_v, mpz_t cur_cnt);
+diff --git a/utility/bsx/bsx.h b/utility/bsx/bsx.h
+index 455d2d6..f74aad8 100644
+--- a/utility/bsx/bsx.h
++++ b/utility/bsx/bsx.h
+@@ -45,6 +45,77 @@ static ui search(const ui* arr, ui size, ui target) {
+ }
+ };  // class b_search
+ 
++
++struct SimInfo {
++    bool enable_;
++    ui** batches_idxs_;
++    ui** sim_batches_;
++    ui** offset_;
++    ui* num_;
++    ui** idxs_;  // indicate each eq_batch belongs to which sim_batch
++    bool* valid_;
++    ui* max_diff_;
++    VertexID** diff_unbrs_;  // the u influences diff_unbrs, match to u, set sim_batch of diff_unbrs to invalid
++    ui* diff_unbrs_cnt_;
++    VertexID* judge_nbrs_;
++    bool** same_or_diff_;  // diff->true, same&no-relation->false
++    bool** batches_processed_;  // used to skip invalid batches
++    ui q_num;
++    SimInfo() { enable_ = false; }
++    void init(const Graph* graph, ui max_candidates_num) {
++        q_num = graph->getVerticesCount();
++        batches_idxs_ = new ui*[q_num];
++        sim_batches_ = new ui*[q_num];
++        offset_ = new ui*[q_num];
++        num_ = new ui[q_num];
++        idxs_ = new ui*[q_num];
++        valid_ = new bool[q_num];
++        max_diff_ = new ui[q_num];
++        diff_unbrs_ = new VertexID*[q_num];
++        diff_unbrs_cnt_ = new ui[q_num];
++        same_or_diff_ = new bool*[q_num];
++        judge_nbrs_ = new VertexID[q_num];
++        batches_processed_ = new bool*[q_num];
++        memset(diff_unbrs_cnt_, 0, sizeof(ui)*q_num);
++        memset(valid_, false, sizeof(bool)*q_num);
++        for (ui i = 0; i < q_num; i++) {
++            diff_unbrs_[i] = new VertexID[graph->getVertexDegree(i)];
++            max_diff_[i] = (graph->getVertexDegree(i) - 1)*(1 - BSX_SIM_THRESHOLD * 0.01);
++            if (max_diff_[i] == 0) continue;
++            batches_idxs_[i] = new ui[max_candidates_num];
++            sim_batches_[i] = new ui[max_candidates_num];
++            offset_[i] = new ui[max_candidates_num + 1];
++            idxs_[i] = new ui[max_candidates_num];
++            batches_processed_[i] = new bool[max_candidates_num];
++            same_or_diff_[i] = new bool[q_num];
++        }
++    }
++    ~SimInfo() {
++        if (!enable_) return;
++        for (ui i = 0; i < q_num; i++) {
++            delete[] diff_unbrs_[i];
++            if (max_diff_[i] == 0) continue;
++            delete[] batches_idxs_[i];
++            delete[] sim_batches_[i];
++            delete[] offset_[i];
++            delete[] idxs_[i];
++            delete[] batches_processed_[i];
++            delete[] same_or_diff_[i];
++        }
++        delete[] batches_idxs_;
++        delete[] sim_batches_;
++        delete[] offset_;
++        delete[] num_;
++        delete[] idxs_;
++        delete[] valid_;
++        delete[] max_diff_;
++        delete[] diff_unbrs_;
++        delete[] diff_unbrs_cnt_;
++        delete[] batches_processed_;
++        delete[] same_or_diff_;
++    }
++};
++
+ /**structures used to store batch info
+  * nodes: store batches which are seperated by offset
+  * offset: indicate the position of each batch
+@@ -68,6 +139,8 @@ struct BatchInfo {
+     stack<ui> idx_;      // point to current batch
+     stack<ui> num_;      // #batches
+     stack<ui> maxCnt_;   // max # of each batches
++    static SimInfo* sim_info;  // release memory at the end of engine
++
+     BatchInfo() {}
+     ~BatchInfo() {
+         while(!nodes_.empty()) {
+-- 
+2.34.1
+
