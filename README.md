@@ -100,7 +100,7 @@ BSX supports different tightness ratios for refinement and varying similarity ra
 
 ## Experiment Datasets
 
-We have placed all the datasets used for testing in the paper at this link: [dataset_BSX](https://github.com/Lu-Yujie/BSX_dataset).
+We have placed all the datasets used for testing in the paper at this link: [dataset_BSX]([https://github.com/Lu-Yujie/BSX_dataset](https://anonymous.4open.science/r/BSX_dataset-F0E2)).
 
 ```bash
 tar -xJf dataset_BSX.tar.xz
