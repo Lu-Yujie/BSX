@@ -11,7 +11,7 @@ enum OptionKeyword {
     Order,                      // -order, The strategy of ordering
     Engine,                     // -engine, The computation engine
     MaxOutputEmbeddingNum,      // -num, The maximum output embedding num
-    TimeLimit,  // -time_limit, The time limit for executing a query in seconds
+    TimeLimit,                  // -time_limit, The time limit for executing a query in milliseconds
     };
 
 class MatchingCommand : public CommandParser{
@@ -50,7 +50,7 @@ public:
     }
 
     std::string getTimeLimit() {
-        return options_value[OptionKeyword::TimeLimit] == "" ? "1" : options_value[OptionKeyword::TimeLimit];
+        return options_value[OptionKeyword::TimeLimit] == "" ? "1000" : options_value[OptionKeyword::TimeLimit];
     }
 
 };

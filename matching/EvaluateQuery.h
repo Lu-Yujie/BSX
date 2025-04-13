@@ -12,11 +12,13 @@ class EvaluateQuery {
 public:
     static void
     BS1Engine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix, ui **candidates,
-                  ui *candidates_count, ui *order, ui *pivot, size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt);
+              ui *candidates_count, ui *order, ui *pivot, size_t output_limit_num, size_t &call_count,
+              mpz_t embedding_cnt, int64_t& time_limit);
 
     static void
     BSXEngine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix, ui **candidates,
-               ui *candidates_count, ui *order, size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt);
+              ui *candidates_count, ui *order, size_t output_limit_num, size_t &call_count,
+              mpz_t embedding_cnt, int64_t& time_limit);
 
 private:
     static void generateBN(const Graph *query_graph, ui *order, ui *pivot, ui **&bn, ui *&bn_count);

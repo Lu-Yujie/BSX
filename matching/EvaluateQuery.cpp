@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstring>
 #include <sys/stat.h>
+#include <timeOp.h>
 
 void EvaluateQuery::generateBN(const Graph *query_graph, ui *order, ui *pivot, ui **&bn, ui *&bn_count) {
     ui q_num = query_graph->getVerticesCount();
@@ -38,7 +39,7 @@ void EvaluateQuery::generateBN(const Graph *query_graph, ui *order, ui *pivot, u
 void
 EvaluateQuery::BS1Engine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix,
                              ui **candidates, ui *candidates_count, ui *order, ui *pivot,
-                             size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt) {
+                             size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt, int64_t& time_limit) {
     // Generate the bn.
     ui **bn;
     ui *bn_count;
@@ -103,6 +104,9 @@ EvaluateQuery::BS1Engine(const Graph *data_graph, const Graph *query_graph, Edge
 
     while (true) {
         while (idx[cur_depth] < idx_count[cur_depth]) {
+            if (TimeOp::getClockNan() >= time_limit) {
+                goto EXIT;
+            }
             ui valid_idx = valid_candidate_idx[cur_depth][idx[cur_depth]];
             VertexID u = order[cur_depth];
             VertexID v = candidates[u][valid_idx];
@@ -294,7 +298,7 @@ void EvaluateQuery::releaseBuffer(ui q_num, ui *idx, ui *idx_count, ui *embeddin
 void
 EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix,
                           ui **candidates, ui *candidates_count, ui *order,
-                          size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt) {
+                          size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt, int64_t& time_limit) {
     ui q_num = query_graph->getVerticesCount();
     // separate leaf and trunk vertices(min_vertex_cover)
     ui num_cover = 0;
@@ -355,6 +359,9 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
             VertexID u = depth2u[cur_depth];
             ui cur_batch_cnt;
             VertexID* cur_batch = batch_info[u].cur_batch(cur_batch_cnt);
+            if (TimeOp::getClockNan() >= time_limit) {
+                goto EXIT;
+            }
 
             // nxt batch
             batch_info[depth2u[cur_depth]].idx_.top()++;
@@ -399,8 +406,10 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
 #endif
                 // enumerate results on indep nodes, process ancestors' ves by the way
                 bsxGenResult(num_indep, indep_nodes, index);
-                gmp_printf("new result: %Zd\n", level_embeddings);
                 mpz_add(embedding_cnt, embedding_cnt, level_embeddings);
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
                 // next batch
                 bsxDeRefine(index);
             } else {

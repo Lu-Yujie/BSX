@@ -8,6 +8,7 @@
 #include "BuildEdgeIndex.h"
 #include "GenerateQueryPlan.h"
 #include "EvaluateQuery.h"
+#include "timeOp.h"
 
 #define NANOSECTOSEC(elapsed_time) ((elapsed_time)/(double)1000000000)
 #define BYTESTOMB(memory_cost) ((memory_cost)/(double)(1024 * 1024))
@@ -66,10 +67,25 @@ int main(int argc, char** argv) {
     /**
      * Start queries.
      */
-
     std::cout << "Start queries..." << std::endl;
     std::cout << "-----" << std::endl;
     std::cout << "Filter candidates..." << std::endl;
+    /**
+     * init variables, set limits
+     */
+    size_t output_limit = 0;
+    mpz_t embedding_cnt;
+    size_t call_count = 0;
+    int64_t time_limit; // 300s by default
+    sscanf(input_time_limit.c_str(), "%ld", &time_limit); // millisecond
+    auto end_time = TimeOp::getClockNan();
+    end_time += time_limit * 1000 * 1000;
+    if (input_max_embedding_num == "MAX") {
+        output_limit = numeric_limits<uint64_t>::max();
+    }
+    else {
+        sscanf(input_max_embedding_num.c_str(), "%zu", &output_limit);
+    }
 
     start = std::chrono::high_resolution_clock::now();
 
@@ -142,27 +158,14 @@ int main(int argc, char** argv) {
 
     std::cout << "-----" << std::endl;
     std::cout << "Enumerate..." << std::endl;
-    size_t output_limit = 0;
-    mpz_t embedding_cnt;
-    if (input_max_embedding_num == "MAX") {
-        output_limit = (size_t)-1;  // -1 means no limits
-    } else {
-        sscanf(input_max_embedding_num.c_str(), "%zu", &output_limit);
-    }
-
-    size_t call_count = 0;
-    size_t time_limit = 0;
-    size_t valid_vtx_count = 0;
-    sscanf(input_time_limit.c_str(), "%zu", &time_limit);
-
     start = std::chrono::high_resolution_clock::now();
 
     if (input_engine_type == "BS1") {
-        EvaluateQuery::BS1Engine(data_graph, query_graph, edge_matrix, candidates,
-                                                      candidates_count, matching_order, pivots, output_limit, call_count, embedding_cnt);
+        EvaluateQuery::BS1Engine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
+                                 matching_order, pivots, output_limit, call_count, embedding_cnt, end_time);
     } else if (input_engine_type == "BSX") {
         EvaluateQuery::BSXEngine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
-                matching_order, output_limit, call_count, embedding_cnt);
+                                 matching_order, output_limit, call_count, embedding_cnt, end_time);
     } else {
         std::cout << "The specified engine type '" << input_engine_type << "' is not supported." << std::endl;
         exit(-1);
