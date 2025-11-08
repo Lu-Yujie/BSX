@@ -18,7 +18,7 @@ make
 We provide 200 test cases along with the corresponding test script. The usage is as follows:
 
 ```bash
-python test.py ../build/matching/BS
+python valid.py ../build/matching/BS
 ```
 
 If all 200 cases pass correctly, the following text will be displayed:
