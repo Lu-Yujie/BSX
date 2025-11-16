@@ -13,8 +13,6 @@
  */
 using spp::sparse_hash_map;
 class Graph {
-public:
-    std::string g_name;
 private:
     bool enable_vlabel_offset_;
 
@@ -26,9 +24,9 @@ private:
 
     ui* offsets_;
     VertexID * neighbors_;
-    LabelID* vlabels_;  // v->label
+    LabelID* vlabels_;
     ui* reverse_index_offsets_;
-    VertexID* reverse_index_;  // label->v
+    ui* reverse_index_;
 
     int* core_table_;
     ui core_length_;
@@ -39,8 +37,19 @@ private:
 #if OPTIMIZED_VLABELED_GRAPH == 1
     ui* vlabels_offsets_;
 
+#ifdef ELABELED_GRAPH
+    // vid->neighbor_label->edge_label
+    std::unordered_map<LabelID, std::unordered_map<LabelID, ui>>*nlf_;
+#else
     // vid->neighbor_label
     std::unordered_map<LabelID, ui>* nlf_;
+#endif
+
+#endif
+
+#ifdef ELABELED_GRAPH
+    ui elabels_count_;
+    ui* elabels_;
 #endif
 
 private:
@@ -62,17 +71,22 @@ public:
         max_vlabel_frequency_ = 0;
         core_length_ = 0;
 
-        offsets_ = nullptr;
-        neighbors_ = nullptr;
-        vlabels_ = nullptr;
-        reverse_index_offsets_ = nullptr;
-        reverse_index_ = nullptr;
-        core_table_ = nullptr;
+        offsets_ = NULL;
+        neighbors_ = NULL;
+        vlabels_ = NULL;
+        reverse_index_offsets_ = NULL;
+        reverse_index_ = NULL;
+        core_table_ = NULL;
         vlabels_frequency_.clear();
-        edge_index_ = nullptr;
+        edge_index_ = NULL;
 #if OPTIMIZED_VLABELED_GRAPH == 1
-        vlabels_offsets_ = nullptr;
-        nlf_ = nullptr;
+        vlabels_offsets_ = NULL;
+        nlf_ = NULL;
+#endif
+
+#ifdef ELABELED_GRAPH
+        elabels_count_ = 0;
+        elabels_ = NULL;
 #endif
     }
 
@@ -87,6 +101,11 @@ public:
 #if OPTIMIZED_VLABELED_GRAPH == 1
         delete[] vlabels_offsets_;
         delete[] nlf_;
+#endif
+
+#ifdef ELABELED_GRAPH
+        // the same order to neighbors
+        delete[] elabels_;
 #endif
     }
 
@@ -169,6 +188,32 @@ public:
         return neighbors_ + vlabels_offsets_[offset];
     }
 
+#ifdef ELABELED_GRAPH
+    const std::unordered_map<LabelID, std::unordered_map<LabelID, ui>>* getVertexNLF(const VertexID id) const {
+        return nlf_ + id;
+    }
+    bool checkEdgeExistence(const VertexID u, const VertexID v, const LabelID u_label, const LabelID e_label) const {
+        ui count = 0;
+        const VertexID* neighbors = getNeighborsByLabel(v, u_label, count);
+        int begin = 0;
+        int end = count - 1;
+        while (begin <= end) {
+            int mid = begin + ((end - begin) >> 1);
+            if (neighbors[mid] == u) {
+                if (e_label == (elabels_+offsets_[v])[mid])
+                    return true;
+                else
+                    return false;
+            }
+            else if (neighbors[mid] > u)
+                end = mid - 1;
+            else
+                begin = mid + 1;
+        }
+
+        return false;
+    }
+#else
     const std::unordered_map<LabelID, ui>* getVertexNLF(const VertexID id) const {
         return nlf_ + id;
     }
@@ -190,6 +235,69 @@ public:
 
         return false;
     }
+#endif
+
+#endif
+
+#ifdef ELABELED_GRAPH
+    /**
+     * for getEdgeLabel, there are two methods
+     * 1. use start & end node to get edge label(not support multi-edges)
+     * 2. use start node and neighbors offset
+    */
+    LabelID getEdgeLabel(VertexID s, VertexID e, bool non_sense) const {
+        ui nbrs_num = 0;
+        const ui* nbrs = getVertexNeighbors(s, nbrs_num);
+        for (ui i = 0; i < nbrs_num; i++) {
+            if (nbrs[i] == e) {
+                return (elabels_+offsets_[s])[i];
+            }
+        }
+        return (LabelID)-1;
+    }
+    LabelID getEdgeLabelCheck(VertexID s, VertexID e, ui offset) const {
+        if ((neighbors_+offsets_[s])[offset] == e) {
+            return (elabels_+offsets_[s])[offset];
+        } else {
+            std::cout << "error in edge label check" << std::endl;
+        }
+    }
+    // return the label of the offset'th edge of u
+    inline LabelID getEdgeLabel(VertexID s, ui offset) const {
+        return (elabels_+offsets_[s])[offset];
+    }
+    // the same order as the neighbors
+    const ui * getVertexEdgeLabels(const VertexID id, ui& count) const {
+        count = offsets_[id + 1] - offsets_[id];
+        return elabels_ + offsets_[id];
+    }
+
+    bool checkEdgeExistence(VertexID u, VertexID v, const LabelID e_label) const {
+        if (getVertexDegree(u) < getVertexDegree(v)) {
+            std::swap(u, v);
+        }
+        ui count = 0;
+        const VertexID* neighbors =  getVertexNeighbors(v, count);
+
+        int begin = 0;
+        int end = count - 1;
+        while (begin <= end) {
+            int mid = begin + ((end - begin) >> 1);
+            if (neighbors[mid] == u) {
+                if (e_label == (elabels_+offsets_[v])[mid])
+                    return true;
+                else
+                    return false;
+            }
+            else if (neighbors[mid] > u)
+                end = mid - 1;
+            else
+                begin = mid + 1;
+        }
+
+        return false;
+    }
+
 #endif
 
     bool checkEdgeExistence(VertexID u, VertexID v) const {

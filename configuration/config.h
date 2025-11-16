@@ -18,6 +18,11 @@
 #define OPTIMIZED_VLABELED_GRAPH 1
 
 /**
+ * have edge label or not
+*/
+// #define ELABELED_GRAPH
+
+/**
  * Set intersection method.
  * 0: Hybrid method; 1: Merge based set intersections.
  */
@@ -35,20 +40,19 @@
 #define ENABLE_FAILING_SET
 
 /**
- * Define ENABLE_EQUIVALENT_SET to enable the equivalent set pruning set intersection method.
- */
-#define ENABLE_EQUIVALENT_SET
-
-/**
  * Define ANALYZE_MEMORY to analyze memory consumption
  */
 // #define ANALYZE_MEMORY
 
 /**
- * Define ANALYZE_DUPLICATE to enable the record the duplicate information
+ * Define FIPE_HOMOMORPHISM to analyze memory consumption
  */
-// #define ANALYZE_DUPLICATE
+#define FIPE_HOMOMORPHISM
 
+/**
+ * Define minimal subset of candidates for backtracking
+ */
+#define MIN_SUBCANS 16
 
 #define PRINT_SEPARATOR "------------------------------"
 

@@ -43,7 +43,7 @@ void GraphOperations::getKCore(const Graph *graph, int *core_table) {
         ui count;
         const VertexID * neighbors = graph->getVertexNeighbors(v, count);
 
-        for(int j = 0; j < count; ++j) {
+        for(ui j = 0; j < count; ++j) {
             int u = neighbors[j];
 
             if (core_table[u] > core_table[v]) {

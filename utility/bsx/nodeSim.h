@@ -40,7 +40,7 @@ namespace NodeSim {
       ui landmark_idx = nbrs_sorted[i].second;
       landmarks.emplace_back(landmark_idx);
     }
-    return move(landmarks);
+    return landmarks;
   }
   /**
    * compute the similarity of each landmark(max:9):lms0,lsm1,...,lsm15(landmark score)
@@ -53,10 +53,10 @@ namespace NodeSim {
     lsh_values.reserve(num_node);
     for (ui i = 0; i < num_node; i++) {
       int64_t score = 0;
-      int scale = 1e15;
+      uint64_t scale = 1e15;
       for (auto& landmark_idx:landmarks) {
         // compute the #same_nbrs for each landmarks
-        int lscore = 0;
+        uint64_t lscore = 0;
         if (landmark_idx == i) lscore = nbrs_cnt[i];
         else {
           ui i_idx = 0, l_idx = 0;
@@ -77,7 +77,7 @@ namespace NodeSim {
       }
       lsh_values.emplace_back(score);
     }
-    return move(lsh_values);
+    return lsh_values;
   }
 
   vector<int64_t>
@@ -89,7 +89,7 @@ namespace NodeSim {
   }
 
   //////////////////// single node has multi group nbrs(nested vector) ////////////////////////////
-  //////////////////// adapted to BSXIndex structure                  ////////////////////////////
+  //////////////////// adapted to BatchIndex structure                 ////////////////////////////
 
   vector<int64_t>  // compute node similarity of valid_cans of u
   nodeSim(BSXIndex& index, VertexID u) {
@@ -108,18 +108,15 @@ namespace NodeSim {
     }
     // compute landmarks
     vector<ui> landmarks = move(chooseLandmark(nbrs_cnt, num_node));
-    cout << "landmarks: ";
-    for (auto&tmp_ele:landmarks) cout << tmp_ele << ", ";
-    cout << endl;
     // compute the lsh value
     vector<int64_t> lsh_values;
     lsh_values.reserve(num_node);
     for (ui i = 0; i < num_node; i++) {
       int64_t score = 0;
-      int scale = exp10(MAX_LANDMARKS);
+      uint64_t scale = exp10(MAX_LANDMARKS);
       for (auto& landmark_idx:landmarks) {
         // compute the #same_nbrs for each landmarks
-        int lscore = 0;
+        uint64_t lscore = 0;
         for (ui unbrs_idx = 0; unbrs_idx < unbrs_cnt; unbrs_idx++) {
           auto& unbr = unbrs[unbrs_idx];
           auto& edges = *(index.index_[u][unbr].top());
@@ -148,7 +145,7 @@ namespace NodeSim {
       }
       lsh_values.emplace_back(score);
     }
-    return move(lsh_values);
+    return lsh_values;
   }
 
 } // namespace NodeSimilarity

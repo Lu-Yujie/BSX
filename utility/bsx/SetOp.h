@@ -13,8 +13,8 @@ using namespace std;
 
 typedef uint32_t ui;
 
-namespace SetOp {
-
+class SetOp {
+public:
 struct ArrayElement {
     ui value;
     ui arrayIndex;
@@ -28,7 +28,7 @@ struct ArrayElement {
     }
 };
 
-vector<ui> unionMultiple(const vector<vector<ui>*>& arrays) {
+static vector<ui> unionMultiple(const vector<vector<ui>*>& arrays) {
     vector<ui> result;
     priority_queue<ArrayElement, vector<ArrayElement>, greater<ArrayElement>> pq;
 
@@ -66,7 +66,45 @@ vector<ui> unionMultiple(const vector<vector<ui>*>& arrays) {
     return result;
 }
 
-vector<ui> unionMultiple(const ui** arrays, const ui* arrays_size, const ui arrays_num) {
+static vector<ui> unionMultiple(const vector<vector<ui>>& arrays) {
+    vector<ui> result;
+    priority_queue<ArrayElement, vector<ArrayElement>, greater<ArrayElement>> pq;
+
+    // init-pq
+    for (ui i = 0; i < arrays.size(); ++i) {
+        if (!arrays[i].empty()) {
+            pq.push({arrays[i][0], i, 0});
+        }
+    }
+
+    if (pq.empty()) return result;
+
+    // first element
+    ArrayElement current = pq.top();
+    pq.pop();
+    result.push_back(current.value);
+    if (current.elementIndex + 1 < arrays[current.arrayIndex].size()) {
+        pq.push({arrays[current.arrayIndex][current.elementIndex + 1], current.arrayIndex, current.elementIndex + 1});
+    }
+
+    // scan all array
+    while (!pq.empty()) {
+        ArrayElement current = pq.top();
+        pq.pop();
+
+        if (result.back() != current.value) {
+            result.push_back(current.value);
+        }
+
+        if (current.elementIndex + 1 < arrays[current.arrayIndex].size()) {
+            pq.push({arrays[current.arrayIndex][current.elementIndex + 1], current.arrayIndex, current.elementIndex + 1});
+        }
+    }
+
+    return result;
+}
+
+static vector<ui> unionMultiple(const ui** arrays, const ui* arrays_size, const ui arrays_num) {
     vector<ui> result;
     priority_queue<ArrayElement, vector<ArrayElement>, greater<ArrayElement>> pq;
 
@@ -110,7 +148,52 @@ vector<ui> unionMultiple(const ui** arrays, const ui* arrays_size, const ui arra
     return result;
 }
 
-void unionTwoAndUpdate(vector<ui>& array1, vector<ui>& array2) {
+static vector<ui> unionMultiple(vector<ui> values, vector<ui> offset) {
+    vector<ui> result;
+    priority_queue<ArrayElement, vector<ArrayElement>, greater<ArrayElement>> pq;
+    auto arrays_num = offset.size() - 1;
+    ui* arrays_size = new ui[arrays_num];
+
+    // init-pq
+    for (ui i = 0; i < arrays_num; ++i) {
+        arrays_size[i] = offset[i+1]-offset[i];
+        if (arrays_size[i] != 0) {
+            pq.push({values[offset[i]], i, 0});
+        }
+    }
+
+    if (pq.empty()) return result;
+
+    // first element
+    ArrayElement current = pq.top();
+    pq.pop();
+    result.push_back(current.value);
+    if (current.elementIndex + 1 < arrays_size[current.arrayIndex]) {
+        pq.push({values[offset[current.arrayIndex] + current.elementIndex + 1], current.arrayIndex, current.elementIndex + 1});
+    }
+
+    // scan all array
+    while (!pq.empty()) {
+        ArrayElement current = pq.top();
+        pq.pop();
+
+        if (result.back() != current.value) {
+            result.push_back(current.value);
+        }
+
+        // If the current array still has elements, add the next element to the priority queue.
+        if (current.elementIndex + 1 < arrays_size[current.arrayIndex]
+            // a possible opt, if next value in result.back, push the next one (if rarely happens, it's neg-opt)
+            // && result.back() != arrays[current.arrayIndex][current.elementIndex + 1]
+            ) {
+            pq.push({values[offset[current.arrayIndex] + current.elementIndex + 1], current.arrayIndex, current.elementIndex + 1});
+        }
+    }
+
+    return result;
+}
+
+static void unionTwoAndUpdate(vector<ui>& array1, vector<ui>& array2) {
     vector<ui> unions;
     ui i = 0, j = 0;
     ui array1_size = array1.size();
@@ -142,7 +225,7 @@ void unionTwoAndUpdate(vector<ui>& array1, vector<ui>& array2) {
     array1.swap(unions);
 }
 
-vector<ui> intersectTwo(const ui* array1, const ui* array2, ui array1_size, ui array2_size) {
+static vector<ui> intersectTwo(const ui* array1, const ui* array2, ui array1_size, ui array2_size) {
     vector<ui> intersection;
     ui i = 0, j = 0;
     while (i < array1_size && j < array2_size) {
@@ -159,7 +242,7 @@ vector<ui> intersectTwo(const ui* array1, const ui* array2, ui array1_size, ui a
     return intersection;
 }
 
-vector<ui> intersectTwo(const vector<ui>& array1, const vector<ui>& array2) {
+static vector<ui> intersectTwo(const vector<ui>& array1, const vector<ui>& array2) {
     vector<ui> intersection;
     ui i = 0, j = 0;
     while (i < array1.size() && j < array2.size()) {
@@ -168,7 +251,7 @@ vector<ui> intersectTwo(const vector<ui>& array1, const vector<ui>& array2) {
         } else if (array1[i] > array2[j]) {
             ++j;
         } else {
-            intersection.push_back(array1[i]);
+            intersection.emplace_back(array1[i]);
             ++i;
             ++j;
         }
@@ -176,7 +259,7 @@ vector<ui> intersectTwo(const vector<ui>& array1, const vector<ui>& array2) {
     return intersection;
 }
 
-vector<ui> intersectTwo(const vector<ui>& array1, const ui* array2, ui array2_size) {
+static vector<ui> intersectTwo(const vector<ui>& array1, const ui* array2, ui array2_size) {
     vector<ui> intersection;
     ui i = 0, j = 0;
     while (i < array1.size() && j < array2_size) {
@@ -193,7 +276,7 @@ vector<ui> intersectTwo(const vector<ui>& array1, const ui* array2, ui array2_si
     return intersection;
 }
 
-bool haveOverlapTwo(const vector<ui>& array1, const vector<ui>& array2) {
+static bool haveOverlapTwo(const vector<ui>& array1, const vector<ui>& array2) {
     ui i = 0, j = 0;
     while (i < array1.size() && j < array2.size()) {
         if (array1[i] < array2[j]) {
@@ -209,7 +292,7 @@ bool haveOverlapTwo(const vector<ui>& array1, const vector<ui>& array2) {
     return false;
 }
 
-vector<ui> intersectMultiple(const ui** arrays, const ui* arrays_size, const ui arrays_num) {
+static vector<ui> intersectMultiple(const ui** arrays, const ui* arrays_size, const ui arrays_num) {
     vector<ui> result;
 
     // check arrays.size
@@ -230,13 +313,11 @@ vector<ui> intersectMultiple(const ui** arrays, const ui* arrays_size, const ui 
 
     // until pointers[*] >= arrays[*].size(), aka, one array reach the end
     while (true) {
-        // cout << "array_idx: " << array_idx << ", pointers: " << pointers[array_idx] << ", minVal: " << minVal << endl;
         if (pointers[array_idx] >= arrays_size[array_idx]) {
             return result;
         }
         while (arrays[array_idx][pointers[array_idx]] < minVal) {
             pointers[array_idx]++;
-            // cout << "jumped: " << arrays[array_idx][pointers[array_idx]] << ", pointers" << pointers[array_idx] << endl;
             if (pointers[array_idx] >= arrays_size[array_idx]) {
                 return result;
             }
@@ -244,7 +325,6 @@ vector<ui> intersectMultiple(const ui** arrays, const ui* arrays_size, const ui 
         if (arrays[array_idx][pointers[array_idx]] != minVal) {
             minVal = arrays[array_idx][pointers[array_idx]];
             cnt = 1;
-            // cout << "new minVal: " << minVal << endl;
         } else {
             cnt++;
             if (cnt == arrays_num) {
@@ -263,7 +343,7 @@ vector<ui> intersectMultiple(const ui** arrays, const ui* arrays_size, const ui 
 }
 
 // A = A-B
-void setDifference(vector<ui>& A,vector<ui>& B) {
+static void setDifference(vector<ui>& A,vector<ui>& B) {
     ui i = 0;  // idx_A
     ui j = 0;  // idx_B
     ui k = 0;  // idx_result, also size
@@ -279,6 +359,7 @@ void setDifference(vector<ui>& A,vector<ui>& B) {
         }
         else {  // A[i] == B[j], delete A[i]
             i++;
+            j++;
         }
     }
 
@@ -289,7 +370,7 @@ void setDifference(vector<ui>& A,vector<ui>& B) {
     A.resize(k);
 }
 
-void setDifference(ui* A, ui& A_size, vector<ui>&B) {
+static void setDifference(ui* A, ui& A_size, vector<ui>&B) {
     ui i = 0;  // idx_A
     ui j = 0;  // idx_B
     ui k = 0;  // idx_result, also size
@@ -304,6 +385,7 @@ void setDifference(ui* A, ui& A_size, vector<ui>&B) {
         }
         else {  // A[i] == B[j], delete A[i]
             i++;
+            j++;
         }
     }
 
@@ -314,8 +396,61 @@ void setDifference(ui* A, ui& A_size, vector<ui>&B) {
     A_size = k;
 }
 
+static vector<ui> setDifference(const ui* A, const ui& A_size, const vector<ui>&B, bool) {
+    ui i = 0;  // idx_A
+    ui j = 0;  // idx_B
+    ui B_size = B.size();
+    vector<ui> result;
+    result.reserve(A_size);
+
+    while (i < A_size && j < B_size) {
+        if (A[i] < B[j]) {  // A[i] not in B, add to result(k)
+            result.emplace_back(A[i++]);
+        }
+        else if (A[i] > B[j]) {  // A[i] > B[j], next ele of B
+            j++;
+        }
+        else {  // A[i] == B[j], delete A[i]
+            i++;
+            j++;
+        }
+    }
+
+    // add remained eles of A
+    while (i < A_size) {
+        result.emplace_back(A[i++]);
+    }
+    return result;
+}
+
+static void setDifference(vector<ui>&A, const ui* B, ui& B_size) {
+    ui i = 0;  // idx_A
+    ui j = 0;  // idx_B
+    ui k = 0;  // idx_result, also size
+    ui A_size = A.size();
+
+    while (i < A_size && j < B_size) {
+        if (A[i] < B[j]) {  // A[i] not in B, add to result(k)
+            A[k++] = A[i++];
+        }
+        else if (A[i] > B[j]) {  // A[i] > B[j], next ele of B
+            j++;
+        }
+        else {  // A[i] == B[j], delete A[i]
+            i++;
+            j++;
+        }
+    }
+
+    // add remained eles of A
+    while (i < A_size) {
+        A[k++] = A[i++];
+    }
+    A.resize(k);
+}
+
 // A = A∩B
-void intersectAndUpdate(vector<ui>&A, vector<ui>&B) {
+static void intersectAndUpdate(vector<ui>&A, vector<ui>&B) {
     ui indexA = 0;
     ui indexB = 0;
     ui insertPos = 0;
@@ -340,7 +475,7 @@ void intersectAndUpdate(vector<ui>&A, vector<ui>&B) {
     return;
 }
 
-bool setInclude(const ui* little, ui l_size, const ui* big, ui b_size) {
+static bool setInclude(const ui* little, ui l_size, const ui* big, ui b_size) {
     if (b_size < l_size) return false;
     for (ui i = 0; i < l_size; i++) {
         bool found = false;
@@ -355,6 +490,6 @@ bool setInclude(const ui* little, ui l_size, const ui* big, ui b_size) {
     return true;
 }
 
-} // namespace SetOp
+}; // class SetOp
 
 #endif
