@@ -6,44 +6,12 @@
 */
 #include <stack>
 #include <unordered_map>
-#include <vector>
 #include <bitset>
 #include <gmp.h>
-#include "graph/graph.h"
+#include "common.h"
 #include "pretty_print.h"
 using namespace std;
 typedef unsigned int ui;
-
-class b_search{
-public:
-/**
- * universal binary search for ui*
-*/
-// small array: linear seach
-static ui smallArraySearch(const ui* arr, ui size, ui target) {
-    for (ui i = 0; i < size; ++i) {
-        if (arr[i] == target)
-            return i;
-    }
-    return (ui)-1;
-}
-
-// large array, use lower bound func
-static ui largeArraySearch(const ui* arr, ui size, ui target) {
-    auto ptr = lower_bound(arr, arr + size, target);
-    if (ptr != arr + size && *ptr == target)
-        return ptr - arr;
-    else
-        return (ui)-1;
-}
-
-static ui search(const ui* arr, ui size, ui target) {
-    if (size <= 4) {
-        return smallArraySearch(arr, size, target);
-    }
-    return largeArraySearch(arr, size, target);
-}
-};  // class b_search
 
 /**structures used to store batch info
  * nodes: store batches which are seperated by offset
@@ -129,30 +97,6 @@ struct BatchInfo {
     }
 };
 
-/**
- * Embedding info
- * mapping between depth, u(query node), v(data node)
- * u2v: u->v, each u only match to one v
- * v2depth: v->depth, too much v, use map instead of array
- * depth2u: depth->u, use vector for dynamic tree height
-*/
-class Embedding{
-public:
-    VertexID* u2v;               // u->v, use the 1st v of batch
-    vector<VertexID> depth2u;    // depth->u
-
-    Embedding(ui cnt) {
-        u2v = new VertexID[cnt];
-        depth2u.reserve(cnt);
-    }
-    ~Embedding() {
-        delete[] u2v;
-    }
-};
-
-/**
- * new index structure, update in time
-*/
 class BSXIndex {
 public:
     stack<Edges*>** index_;  // can be used to judge edge existence, index_[u_1][u_2].size() != 0
@@ -181,7 +125,6 @@ public:
         num_cover_ = num_cover;
         auto qnum = q_graph->getVerticesCount();
         auto dnum = d_graph->getVerticesCount();
-        auto num_indep = qnum - num_cover;
         index_ = new stack<Edges*>*[qnum];
         batch_info = new BatchInfo[qnum];
         visited_u = new bool[qnum];
@@ -257,7 +200,7 @@ public:
     // get Neighbors of v(can of u_1) from u_1 to u_2
     // used to generate valid cans, by union nbrs, 24-3-7
     const VertexID* getNeighbors(VertexID u_1, VertexID u_2, VertexID v, ui& nbrs_cnt) {
-        auto v_idx = b_search::search(index_cans_[u_1], index_cnt_[u_1], v);
+        auto v_idx = b_search<ui*>::search(index_cans_[u_1], index_cnt_[u_1], v);
         if (v_idx == (ui)-1) {
             cout << "can't find " << v << " in index_cans_[" << u_1 << "]: ";
             for (ui i = 0; i < index_cnt_[u_1]; i++) cout << index_cans_[u_1][i] << ", ";
@@ -277,7 +220,7 @@ public:
         auto unbrs = q_graph_->getVertexNeighbors(u, unbrs_cnt);
         for (ui i = 0; i < unbrs_cnt; i++ ) {
             auto& edges = *(index_[u][unbrs[i]].top());
-            auto v_idx = b_search::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
+            auto v_idx = b_search<ui*>::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
             if (v_idx == (ui)-1) {
                 cout << "BSXIndex::getNeighbors_uv::v_idx == (ui)-1" << endl;
                 exit(1);
@@ -409,36 +352,5 @@ public:
         return 0;
     }
 };
-
-namespace mem {
-    /**
-     * get peak virtual memory space of the current process
-     * https://stackoverflow.com/questions/63166/how-to-determine-cpu-and-memory-consumption-from-inside-a-process#answer-64166
-     */
-    inline int parseLine(char* line){
-        // This assumes that a digit will be found and the line ends in " Kb".
-        int i = strlen(line);
-        const char* p = line;
-        while (*p <'0' || *p > '9') p++;
-        line[i-3] = '\0';
-        i = atoi(p);
-        return i;
-    }
-
-    inline int getValue(){ //Note: this value is in KB!
-        FILE* file = fopen("/proc/self/status", "r");
-        int result = -1;
-        char line[128];
-
-        while (fgets(line, 128, file) != NULL){
-            if (strncmp(line, "VmPeak:", 7) == 0){
-                result = parseLine(line);
-                break;
-            }
-        }
-        fclose(file);
-        return result;
-    }
-}
 
 #endif

@@ -1,2 +1,6 @@
+# for code test
 build
 .vscode
+valid
+# for code develop compile
+abuild

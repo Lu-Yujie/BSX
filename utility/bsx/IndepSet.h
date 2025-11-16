@@ -1,14 +1,3 @@
-/**
- * compute the max indepedent set
- * code from https://github.com/LijunChang/Near-Maximum-Independent-Set.
- * Lijun Chang, Wei Li and Wenjie Zhang.
- * Computing A Near-Maximum Independent Set in Linear Time by Reducing-Peeling.
- * changes:
- *  1. support graph format
- *  2. return specific set contents
- *  3. remove unused code
-*/
-
 #ifndef IndepSet_H
 #define IndepSet_H
 #include "graph/graph.h"

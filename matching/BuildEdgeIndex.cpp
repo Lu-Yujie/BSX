@@ -1,13 +1,15 @@
 #include "BuildEdgeIndex.h"
 #include <vector>
 #include <algorithm>
+using namespace std;
 
 void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
                              Edges ***edge_matrix) {
-    ui q_num = query_graph->getVerticesCount();
-    ui* flag = new ui[data_graph->getVerticesCount()];
-    ui* updated_flag = new ui[data_graph->getVerticesCount()];
-    std::fill(flag, flag + data_graph->getVerticesCount(), 0);
+    auto q_num = query_graph->getVerticesCount();
+    auto d_num = data_graph->getVerticesCount();
+    ui* flag = new ui[d_num];
+    ui* updated_flag = new ui[d_num];
+    fill(flag, flag + d_num, 0);
 
     for (ui i = 0; i < q_num; ++i) {
         for (ui j = 0; j < q_num; ++j) {
@@ -16,27 +18,33 @@ void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *que
     }
 
     // generate table order based on node degree
-    std::vector<VertexID> build_table_order(q_num);
+    vector<VertexID> build_table_order(q_num);
     for (ui i = 0; i < q_num; ++i) {
         build_table_order[i] = i;
     }
 
-    std::sort(build_table_order.begin(), build_table_order.end(), [query_graph](VertexID l, VertexID r) {
+    sort(build_table_order.begin(), build_table_order.end(), [query_graph](VertexID l, VertexID r) {
         if (query_graph->getVertexDegree(l) == query_graph->getVertexDegree(r)) {
             return l < r;
         }
         return query_graph->getVertexDegree(l) > query_graph->getVertexDegree(r);
     });
 
-    std::vector<ui> temp_edges(data_graph->getEdgesCount() * 2);
+    vector<ui> temp_edges(data_graph->getEdgesCount() * 2);
 
     for (auto u : build_table_order) {
         ui u_nbrs_count;
         const VertexID* u_nbrs = query_graph->getVertexNeighbors(u, u_nbrs_count);
+#ifdef ELABELED_GRAPH
+        auto u_elabels = query_graph->getVertexEdgeLabels(u, u_nbrs_count);
+#endif
         ui updated_flag_count = 0;
 
         for (ui i = 0; i < u_nbrs_count; ++i) {
             VertexID u_nbr = u_nbrs[i];
+#ifdef ELABELED_GRAPH
+            LabelID u_elabel = u_elabels[i];
+#endif
             if (edge_matrix[u][u_nbr] != nullptr)
                 continue;
 
@@ -59,7 +67,7 @@ void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *que
             edge_matrix[u][u_nbr] = new Edges;
             edge_matrix[u][u_nbr]->vertex_count_ = candidates_count[u];
             edge_matrix[u][u_nbr]->offset_ = new ui[candidates_count[u] + 1];
-            std::fill(edge_matrix[u][u_nbr]->offset_, edge_matrix[u][u_nbr]->offset_ + candidates_count[u] + 1, 0);
+            fill(edge_matrix[u][u_nbr]->offset_, edge_matrix[u][u_nbr]->offset_ + candidates_count[u] + 1, 0);
 
             ui local_edge_count = 0;
             ui local_max_degree = 0;
@@ -70,10 +78,19 @@ void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *que
 
                 ui v_nbrs_count;
                 const VertexID* v_nbrs = data_graph->getVertexNeighbors(v, v_nbrs_count);
+#ifdef ELABELED_GRAPH
+                auto v_elabels = data_graph->getVertexEdgeLabels(v, v_nbrs_count);
+#endif
                 ui local_degree = 0;
 
                 for (ui k = 0; k < v_nbrs_count; ++k) {
                     VertexID v_nbr = v_nbrs[k];
+#ifdef ELABELED_GRAPH
+                    LabelID v_elabel = v_elabels[k];
+                    if (v_elabel != u_elabel) {
+                        continue;
+                    }
+#endif
                     if (flag[v_nbr] != 0) {
                         ui position = flag[v_nbr] - 1;
                         temp_edges[local_edge_count++] = position;
@@ -91,7 +108,7 @@ void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *que
             edge_matrix[u_nbr][u]->max_degree_ = local_max_degree;
             edge_matrix[u_nbr][u]->edge_count_ = local_edge_count;
             edge_matrix[u_nbr][u]->edge_ = new ui[local_edge_count];
-            std::copy(temp_edges.begin(), temp_edges.begin() + local_edge_count, edge_matrix[u_nbr][u]->edge_);
+            copy(temp_edges.begin(), temp_edges.begin() + local_edge_count, edge_matrix[u_nbr][u]->edge_);
 
             edge_matrix[u][u_nbr]->edge_count_ = local_edge_count;
             edge_matrix[u][u_nbr]->edge_ = new ui[local_edge_count];
@@ -131,10 +148,11 @@ void BuildEdgeIndex::buildCansIdxIndex(const Graph *data_graph, const Graph *que
 void
 BuildEdgeIndex::buildCansIndex(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
                                Edges ***edge_matrix) {
-    ui q_num = query_graph->getVerticesCount();
-    ui* flag = new ui[data_graph->getVerticesCount()];
-    ui* updated_flag = new ui[data_graph->getVerticesCount()];
-    std::fill(flag, flag + data_graph->getVerticesCount(), 0);
+    auto q_num = query_graph->getVerticesCount();
+    auto d_num = data_graph->getVerticesCount();
+    ui* flag = new ui[d_num];
+    ui* updated_flag = new ui[d_num];
+    fill(flag, flag + d_num, 0);
 
     for (ui i = 0; i < q_num; ++i) {
         for (ui j = 0; j < q_num; ++j) {
@@ -142,27 +160,33 @@ BuildEdgeIndex::buildCansIndex(const Graph *data_graph, const Graph *query_graph
         }
     }
 
-    std::vector<VertexID> build_table_order(q_num);
+    vector<VertexID> build_table_order(q_num);
     for (ui i = 0; i < q_num; ++i) {
         build_table_order[i] = i;
     }
 
-    std::sort(build_table_order.begin(), build_table_order.end(), [query_graph](VertexID l, VertexID r) {
+    sort(build_table_order.begin(), build_table_order.end(), [query_graph](VertexID l, VertexID r) {
         if (query_graph->getVertexDegree(l) == query_graph->getVertexDegree(r)) {
             return l < r;
         }
         return query_graph->getVertexDegree(l) > query_graph->getVertexDegree(r);
     });
 
-    std::vector<ui> temp_edges(data_graph->getEdgesCount() * 2);
+    vector<ui> temp_edges(data_graph->getEdgesCount() * 2);
 
     for (auto u : build_table_order) {
         ui u_nbrs_count;
         const VertexID* u_nbrs = query_graph->getVertexNeighbors(u, u_nbrs_count);
+#ifdef ELABELED_GRAPH
+        auto u_elabels = query_graph->getVertexEdgeLabels(u, u_nbrs_count);
+#endif
         ui updated_flag_count = 0;
 
         for (ui i = 0; i < u_nbrs_count; ++i) {
             VertexID u_nbr = u_nbrs[i];
+#ifdef ELABELED_GRAPH
+            LabelID u_elabel = u_elabels[i];
+#endif
             if (edge_matrix[u][u_nbr] != nullptr)
                 continue;
 
@@ -181,7 +205,7 @@ BuildEdgeIndex::buildCansIndex(const Graph *data_graph, const Graph *query_graph
             edge_matrix[u][u_nbr] = new Edges;
             edge_matrix[u][u_nbr]->vertex_count_ = candidates_count[u];
             edge_matrix[u][u_nbr]->offset_ = new ui[candidates_count[u] + 1];
-            std::fill(edge_matrix[u][u_nbr]->offset_, edge_matrix[u][u_nbr]->offset_ + candidates_count[u] + 1, 0);
+            fill(edge_matrix[u][u_nbr]->offset_, edge_matrix[u][u_nbr]->offset_ + candidates_count[u] + 1, 0);
 
             ui local_edge_count = 0;
             ui local_max_degree = 0;
@@ -192,10 +216,19 @@ BuildEdgeIndex::buildCansIndex(const Graph *data_graph, const Graph *query_graph
 
                 ui v_nbrs_count;
                 const VertexID* v_nbrs = data_graph->getVertexNeighbors(v, v_nbrs_count);
+#ifdef ELABELED_GRAPH
+                auto v_elabels = data_graph->getVertexEdgeLabels(v, v_nbrs_count);
+#endif
                 ui local_degree = 0;
 
                 for (ui k = 0; k < v_nbrs_count; ++k) {
                     VertexID v_nbr = v_nbrs[k];
+#ifdef ELABELED_GRAPH
+                    LabelID v_elabel = v_elabels[k];
+                    if (v_elabel != u_elabel) {
+                        continue;
+                    }
+#endif
                     if (flag[v_nbr] != 0) {
                         ui position = flag[v_nbr] - 1;
                         temp_edges[local_edge_count++] = v_nbr;  // record id. instead of idx
@@ -213,7 +246,7 @@ BuildEdgeIndex::buildCansIndex(const Graph *data_graph, const Graph *query_graph
             edge_matrix[u_nbr][u]->max_degree_ = local_max_degree;
             edge_matrix[u_nbr][u]->edge_count_ = local_edge_count;
             edge_matrix[u_nbr][u]->edge_ = new ui[local_edge_count];
-            std::copy(temp_edges.begin(), temp_edges.begin() + local_edge_count, edge_matrix[u_nbr][u]->edge_);
+            copy(temp_edges.begin(), temp_edges.begin() + local_edge_count, edge_matrix[u_nbr][u]->edge_);
 
             edge_matrix[u][u_nbr]->edge_count_ = local_edge_count;
             edge_matrix[u][u_nbr]->edge_ = new ui[local_edge_count];

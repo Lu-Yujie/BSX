@@ -1,0 +1,755 @@
+From b8ae44ff3d4992b3999df7b75de20f4a85e71bf5 Mon Sep 17 00:00:00 2001
+From:  xxx.email
+Date: xxx
+Subject: [PATCH] Adjust source VEQ to adapt framework
+
+* rewrite ReadIgraphFormat
+
+* add time limit to VEQ
+---
+ sourceCode/VEQ/CMakeLists.txt      |  10 +--
+ sourceCode/VEQ/include/VEQ.h       |  30 +++++++-
+ sourceCode/VEQ/include/compare.h   |   7 ++
+ sourceCode/VEQ/include/config.h    |  16 ++++
+ sourceCode/VEQ/include/graph.h     |  57 ++++++++------
+ sourceCode/VEQ/include/memory.h    |   7 ++
+ sourceCode/VEQ/include/process.h   | 119 +++++++++++------------------
+ sourceCode/VEQ/include/run.h       |  31 ++++----
+ sourceCode/VEQ/include/structure.h |   7 ++
+ sourceCode/VEQ/include/util.h      |   7 ++
+ sourceCode/VEQ/veq.cpp             |  89 ++++-----------------
+ sourceCode/VEQ/veq.h               |  26 +++++--
+ 12 files changed, 194 insertions(+), 212 deletions(-)
+
+diff --git a/sourceCode/VEQ/CMakeLists.txt b/sourceCode/VEQ/CMakeLists.txt
+index 3c429ee..9d6e91a 100644
+--- a/sourceCode/VEQ/CMakeLists.txt
++++ b/sourceCode/VEQ/CMakeLists.txt
+@@ -1,16 +1,8 @@
+ set(VEQ_SRC
+      veq.cpp)
+ 
+-set(CMAKE_CXX_FLAGS
+-    "${CMAKE_CXX_FLAGS} -DDYNAMIC_ORDERING \
+-     -DFILTERING_BY_NEIGHBOR_SAFETY \
+-     -DLEAF_ADAPTIVE_MATCHING \
+-     -DN_OPTIMIZATION \
+-     -DPRUNING_BY_EQUIVALENCE_SETS \
+-     -DSUBGRAPH_MATCHING")
+-
+ add_library(VEQ SHARED ${VEQ_SRC})
+-target_link_libraries(VEQ graph utility)
++target_link_libraries(VEQ graph)
+ 
+ set_target_properties(VEQ PROPERTIES
+     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+diff --git a/sourceCode/VEQ/include/VEQ.h b/sourceCode/VEQ/include/VEQ.h
+index 10233eb..62e8c32 100644
+--- a/sourceCode/VEQ/include/VEQ.h
++++ b/sourceCode/VEQ/include/VEQ.h
+@@ -1,3 +1,6 @@
++#ifndef VEQ_VEQ_H
++#define VEQ_VEQ_H
++
+ #define CELL_COMPUTATION_OPT
+ #include <algorithm>
+ #include <cfloat>
+@@ -11,11 +14,13 @@
+ #include "memory.h"
+ using namespace std;
+ 
++namespace VEQ {
+ // Elapsed time variable used in the main function
+ bool exceedTimeLimit;
+ chrono::high_resolution_clock::time_point startPoint, endPoint;
+ double elapsedTime;
+-const double timeLimit = 600000;
++int64_t timeLimit = 1000;
++int64_t endTime = 0;
+ double filteringTime;
+ double verificationTime;
+ double totalTime;
+@@ -340,6 +345,10 @@ inline bool filteringWithDAG(const Graph& query, const Graph& data,
+     orderAdd = -1;
+   }
+   for (int i = orderSt; i != orderEd; i += orderAdd) {
++    if (GetClockNan() > endTime) {
++      exceedTimeLimit = true;
++      return false;
++    }
+     ++index_vis_adj;
+     ++index_vis_color;
+     const int query_node_cur = uSequence[i];
+@@ -515,6 +524,10 @@ inline bool TopDownInitial(const Graph& query, const Graph& data) {
+     start++;
+   // For each v in G with label
+   for (int j = start; j < end; j++) {
++    if (GetClockNan() > endTime) {
++      exceedTimeLimit = true;
++      return false;
++    }
+     int v = data.vertex[j];  // v
+     if (data.core[v] < query.core[root] ||
+         data.maxNbrDegree[v] < query.maxNbrDegree[root])
+@@ -785,6 +798,10 @@ inline bool ConstructAdjacencyList(const Graph& query, const Graph& data,
+                 pairHash>::const_iterator iter;
+   // For each query vertex u of dag(q) in a bottom-up fashion
+   for (int i = uSequenceSize - 1; i >= 0; --i) {
++    if (GetClockNan() > endTime) {
++      exceedTimeLimit = true;
++      return false;
++    }
+     int u = uSequence[i];  // u
+     int currLabel = query.label[u];
+     if (query.NECMap[u] != -1 && query.NECMap[u] != u) continue;
+@@ -2144,7 +2161,7 @@ void updateCellInfo(int depth) {
+ 
+   Stack& higherE = element[depth - 1];
+ #ifdef SUBGRAPH_MATCHING
+-  Deactivate(*currE, depth);
++  if (currE) Deactivate(*currE, depth);
+   higherE.nFoundMatch[higherE.addressPos] =
+       nMatch - higherE.nFoundMatch[higherE.addressPos];
+ #endif
+@@ -2270,7 +2287,7 @@ inline bool cannotMap(int dataGraphID) {
+       return true;
+     }
+ #endif
+-#if SUBGRAPH_MATCHING
++#ifdef SUBGRAPH_MATCHING
+     if (nMatch >= nMaxMatch) {
+       return true;
+     }
+@@ -2457,6 +2474,10 @@ inline void Backtrack(const Graph& query, const Graph& data, int dataGraphID) {
+         }
+         continue;
+       }  // if (depth == query.nNonLeaf)
++      if (GetClockNan() > endTime) {
++        exceedTimeLimit = true;
++        return;
++      }
+       currE = &element[depth];
+       // Find \intersection_{u_p in u.p} (N^{u_p}_{u}(M(u_p)))
+       if (currE->address == NULL) {
+@@ -2768,3 +2789,6 @@ inline void Backtrack(const Graph& query, const Graph& data, int dataGraphID) {
+     reset(depth, ri, rootCand);
+   }  // for candSpace[root]
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_VEQ_H
+diff --git a/sourceCode/VEQ/include/compare.h b/sourceCode/VEQ/include/compare.h
+index b962176..ffaf1f5 100644
+--- a/sourceCode/VEQ/include/compare.h
++++ b/sourceCode/VEQ/include/compare.h
+@@ -1,5 +1,9 @@
++#ifndef VEQ_COMPARE_H
++#define VEQ_COMPARE_H
++
+ #include "run.h"
+ 
++namespace VEQ {
+ bool compare(string dataGraphFile, string queryGraphFile, string resultFile) {
+   ReadGFUFormat(dataGraphFile, dataGraph);
+   ProcessDataGraphs();
+@@ -36,3 +40,6 @@ bool compare(string dataGraphFile, string queryGraphFile, string resultFile) {
+ 
+   return true;
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_COMPARE_H
+diff --git a/sourceCode/VEQ/include/config.h b/sourceCode/VEQ/include/config.h
+index 0545f99..51c4a44 100644
+--- a/sourceCode/VEQ/include/config.h
++++ b/sourceCode/VEQ/include/config.h
+@@ -1,3 +1,16 @@
++#ifndef VEQ_CONFIG_H
++#define VEQ_CONFIG_H
++
++namespace VEQ {
++
++// config options
++#define DYNAMIC_ORDERING
++#define FILTERING_BY_NEIGHBOR_SAFETY
++#define LEAF_ADAPTIVE_MATCHING
++#define N_OPTIMIZATION
++#define PRUNING_BY_EQUIVALENCE_SETS
++#define SUBGRAPH_MATCHING
++
+ typedef long long weight_type;
+ typedef unsigned short degree_type;
+ #ifdef HUGE_GRAPH
+@@ -45,3 +58,6 @@ bool isTree = false;
+ 
+ int NLFSize = -1;
+ int nUniqueLabel = 0;
++
++}  // namespace VEQ
++#endif  // VEQ_CONFIG_H
+\ No newline at end of file
+diff --git a/sourceCode/VEQ/include/graph.h b/sourceCode/VEQ/include/graph.h
+index fa051d0..4994e08 100644
+--- a/sourceCode/VEQ/include/graph.h
++++ b/sourceCode/VEQ/include/graph.h
+@@ -1,9 +1,13 @@
++#ifndef VEQ_GRAPH_H
++#define VEQ_GRAPH_H
++
+ #include <algorithm>
+ #include <unordered_map>
+ 
+ #include "config.h"
+ using namespace std;
+ 
++namespace VEQ {
+ int* cntLabel = nullptr;
+ int* positiveLabel = nullptr;
+ 
+@@ -95,26 +99,26 @@ class Graph {
+     nLabel = 0;
+     maxDegree = 0;
+ 
+-    label = NULL;
++    label = nullptr;
+ #ifdef EDGE_LABEL
+ #else
+-    nbr = NULL;
++    nbr = nullptr;
+ #endif
+-    nbrOffset = NULL;
+-    core = NULL;
+-    degree = NULL;
+-    vertex = NULL;        // vertices sorted by labels
+-    vertexOffset = NULL;  // vertexOffset[l]: the offset of the starting
+-                          // position of vertices with label l
+-    maxNbrDegree = NULL;
++    nbrOffset = nullptr;
++    core = nullptr;
++    degree = nullptr;
++    vertex = nullptr;        // vertices sorted by labels
++    vertexOffset = nullptr;  // vertexOffset[l]: the offset of the starting
++                             // position of vertices with label l
++    maxNbrDegree = nullptr;
+ #ifdef NEIGHBOR_LABEL_FREQUENCY
+ #else
+-    NLF = NULL;
++    NLF = nullptr;
+ #endif
+-    NECMap = NULL;
++    NECMap = nullptr;
+     numNECMapping = 0;
+-    NECMapping = NULL;
+-    NECElement = NULL;
++    NECMapping = nullptr;
++    NECElement = nullptr;
+   }
+ 
+   inline void initVertex(const number_type n) {
+@@ -299,28 +303,31 @@ class Graph {
+ 
+ // Variables for buildling CS
+ struct CandidateSpace {
+-  int size = 0;         // the size for both path and candidates
++  int size = 0;               // the size for both path and candidates
+   int* candidates = nullptr;  // candidate set
+-  int*** adjacent =
+-      NULL;  // adjacent[i][j] = candidates of this unit when the i-th parent,
+-             // regarding DAG, mapped to the j-th candidate of the parent.
++  int*** adjacent = nullptr;  // adjacent[i][j] = candidates of this unit when
++                              // the i-th parent, regarding DAG, mapped to the
++                              // j-th candidate of the parent.
+   int** nAdjacent =
+-      NULL;  // nAdjacent[i][j] = size of back_trak_index[i][j]. That is, the
+-             // number of candidates of this unit when the i-th parent mapped to
+-             // the j-th candidate of the parent.
++      nullptr;  // nAdjacent[i][j] = size of back_trak_index[i][j]. That is, the
++                // number of candidates of this unit when the i-th parent mapped
++                // to the j-th candidate of the parent.
+ 
+ #ifdef N_OPTIMIZATION
+-  int** capacity = NULL;
+-  int** capacityNgb = NULL;
++  int** capacity = nullptr;
++  int** capacityNgb = nullptr;
+ #else
+   int* nParentCand =
+-      NULL;  // nParentCand[i] = the number of candidates of the i-th parent.
+-  int* nNgbCand = NULL;
++      nullptr;  // nParentCand[i] = the number of candidates of the i-th parent.
++  int* nNgbCand = nullptr;
+ #endif
+-  long long* weight = NULL;
++  long long* weight = nullptr;
+ #ifdef PRUNING_BY_EQUIVALENCE_SETS
+   int* cell = nullptr;
+   int* cellVertex = nullptr;
+   int nCellVertex = 0;
+ #endif
+ };
++
++}  // namespace VEQ
++#endif  // VEQ_GRAPH_H
+diff --git a/sourceCode/VEQ/include/memory.h b/sourceCode/VEQ/include/memory.h
+index 0e3cebc..953abf0 100644
+--- a/sourceCode/VEQ/include/memory.h
++++ b/sourceCode/VEQ/include/memory.h
+@@ -1,3 +1,6 @@
++#ifndef VEQ_MEMORY_H
++#define VEQ_MEMORY_H
++
+ #include <vector>
+ 
+ #include "structure.h"
+@@ -5,6 +8,7 @@
+ 
+ using namespace std;
+ 
++namespace VEQ {
+ #ifdef PRUNING_BY_EQUIVALENCE_SETS
+ unordered_map<Array, int, ArrayHash> cellToID;
+ #ifdef SUBGRAPH_MATCHING
+@@ -450,3 +454,6 @@ inline void initialize(vector<Graph*>& dataGraph, vector<Graph*>& queryGraph) {
+   dataGraph.clear();
+   queryGraph.clear();
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_MEMORY_H
+diff --git a/sourceCode/VEQ/include/process.h b/sourceCode/VEQ/include/process.h
+index beb50a9..c2d6f16 100644
+--- a/sourceCode/VEQ/include/process.h
++++ b/sourceCode/VEQ/include/process.h
+@@ -1,15 +1,17 @@
++#ifndef VEQ_PROCESS_H
++#define VEQ_PROCESS_H
++
+ #include <chrono>
+ #include <cstring>
+ #include <fstream>
+ #include <iostream>
+ #include <tuple>
+ #include <vector>
+-#include <cstdlib>
+-#include <set>
+ 
+ #include "graph.h"
+ using namespace std;
+ 
++namespace VEQ {
+ CandidateSpace candSpace[MAX_NUM_VERTEX];
+ #ifdef PRUNING_BY_EQUIVALENCE_SETS
+ int uI;
+@@ -87,6 +89,9 @@ uint64_t* DAG_ancestor[MAX_NUM_VERTEX];
+ chrono::high_resolution_clock::time_point GetClock() {
+   return chrono::high_resolution_clock::now();
+ }
++int64_t GetClockNan() {
++  return chrono::high_resolution_clock::now().time_since_epoch().count();
++}
+ double TimeDiffInMilliseconds(
+     const chrono::high_resolution_clock::time_point start,
+     const chrono::high_resolution_clock::time_point end) {
+@@ -274,12 +279,14 @@ inline void ReadIgraphFormat(const string& graphFile,
+     exit(1);
+   }
+ 
+-  Graph* graph = NULL;
++  auto graph = new Graph();
++  graphList.push_back(graph);
++  int cntVertex = 0;
+   vector<pair<int, int>> edges;
+   vector<int> vertices;
+-  string line;
+-  char symbol, state;
+-  int fst, snd, labelID, cntVertex;
++  string symbol, line;
++  char state;
++  int fst, snd, labelID;
+   number_type pos, numVertex, numEdge;
+   unordered_map<string, int>::const_iterator sIter;
+   unordered_map<int, int>::const_iterator iIter;
+@@ -288,42 +295,12 @@ inline void ReadIgraphFormat(const string& graphFile,
+     if (inFile.eof()) break;
+     switch (state) {
+       case 't':
+-        if (graph != NULL) {
+-          graph->initEdge(edges.size());
+-          pos = 0;
+-          for (int i = 0; i < graph->nVertex; ++i) {
+-            graph->nbrOffset[i] = pos;
+-            pos += (number_type)graph->degree[i];
+-            graph->core[i] = graph->degree[i];
+-            if (graph->degree[i] > graph->maxDegree)
+-              graph->maxDegree = graph->degree[i];
+-          }
+-          graph->nbrOffset[graph->nVertex] = pos;
+-          memset(graph->degree, 0, sizeof(int) * graph->nVertex);
+-
+-          for (int i = 0; i < edges.size(); ++i) {
+-            fst = edges[i].first;
+-            snd = edges[i].second;
+-#ifdef EDGE_LABEL
+-            graph->nbr.set(graph->nbrOffset[fst] + graph->degree[fst], snd);
+-            graph->nbr.set(graph->nbrOffset[snd] + graph->degree[snd], fst);
+-#else
+-            graph->nbr[graph->nbrOffset[fst] + graph->degree[fst]] = snd;
+-            graph->nbr[graph->nbrOffset[snd] + graph->degree[snd]] = fst;
+-#endif
+-            graph->degree[fst] += 1;
+-            graph->degree[snd] += 1;
+-          }
+-        }
+-        inFile >> symbol >> line;
+-        graph = new Graph();
+-        graphList.push_back(graph);
+-        cntVertex = 0;
+-        edges.clear();
+-        vertices.clear();
++        // v_num, e_num
++        inFile >> fst >> snd;
+         break;
+       case 'v':
+-        inFile >> fst >> line;
++        // id, label, degree
++        inFile >> fst >> line >> snd;
+         sIter = labelMap.find(line);
+         if (sIter != labelMap.end()) {
+           labelID = sIter->second;
+@@ -337,57 +314,48 @@ inline void ReadIgraphFormat(const string& graphFile,
+         } else {
+           graph->labelFrequency[labelID] = 1;
+         }
+-        vertices.push_back(labelID);
++        vertices.emplace_back(labelID);
+         ++cntVertex;
+         break;
+       case 'e':
+         if (edges.size() == 0) {
+           graph->initVertex(cntVertex);
+           graph->nLabel = labelMap.size();
+-          for (int i = 0; i < graph->nVertex; ++i)
+-            graph->label[i] = vertices[i];
++          edges.reserve(numEdge);
++          memset(graph->degree, 0, sizeof(int) * graph->nVertex);
++          copy(vertices.begin(), vertices.end(), graph->label);
+         }
+-        inFile >> fst >> snd >> labelID;
+-        // inFile >> fst >> snd;
++        // inFile >> fst >> snd >> labelID;
++        inFile >> fst >> snd;
+         graph->degree[fst] += 1;
+         graph->degree[snd] += 1;
+-        edges.push_back(make_pair(fst, snd));
++        edges.emplace_back(fst, snd);
+         break;
+       default:
+         exit(1);
+         break;
+     }
+   }
+-  if (graph != NULL) {
+-    graph->initEdge(edges.size());
+-    pos = 0;
+-    for (int i = 0; i < graph->nVertex; ++i) {
+-      graph->nbrOffset[i] = pos;
+-      pos += (number_type)graph->degree[i];
+-      graph->core[i] = graph->degree[i];
+-      if (graph->degree[i] > graph->maxDegree)
+-        graph->maxDegree = graph->degree[i];
+-    }
+-    graph->nbrOffset[graph->nVertex] = pos;
+-    memset(graph->degree, 0, sizeof(int) * graph->nVertex);
+-
+-    for (int i = 0; i < edges.size(); ++i) {
+-      fst = edges[i].first;
+-      snd = edges[i].second;
+-#ifdef EDGE_LABEL
+-      graph->nbr.set(graph->nbrOffset[fst] + graph->degree[fst], snd);
+-      graph->nbr.set(graph->nbrOffset[snd] + graph->degree[snd], fst);
+-#else
+-      graph->nbr[graph->nbrOffset[fst] + graph->degree[fst]] = snd;
+-      graph->nbr[graph->nbrOffset[snd] + graph->degree[snd]] = fst;
+-#endif
+-      graph->degree[fst] += 1;
+-      graph->degree[snd] += 1;
+-    }
++  graph->initEdge(edges.size());
++  pos = 0;
++  for (int i = 0; i < graph->nVertex; ++i) {
++    graph->nbrOffset[i] = pos;
++    pos += (number_type)graph->degree[i];
++    graph->core[i] = graph->degree[i];
++    if (graph->degree[i] > graph->maxDegree)
++      graph->maxDegree = graph->degree[i];
++  }
++  graph->nbrOffset[graph->nVertex] = pos;
++  memset(graph->degree, 0, sizeof(int) * graph->nVertex);
++  for (int i = 0; i < edges.size(); ++i) {
++    fst = edges[i].first;
++    snd = edges[i].second;
++    graph->nbr[graph->nbrOffset[fst] + graph->degree[fst]] = snd;
++    graph->nbr[graph->nbrOffset[snd] + graph->degree[snd]] = fst;
++    graph->degree[fst] += 1;
++    graph->degree[snd] += 1;
+   }
+   inFile.close();
+-  edges.clear();
+-  vertices.clear();
+ }
+ 
+ inline void ProcessDataGraphs() {
+@@ -515,3 +483,6 @@ inline void GetQueryDataStructure(Graph& query) {
+   }
+   query.computeNLF();
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_PROCESS_H
+diff --git a/sourceCode/VEQ/include/run.h b/sourceCode/VEQ/include/run.h
+index fafca4b..c07415a 100644
+--- a/sourceCode/VEQ/include/run.h
++++ b/sourceCode/VEQ/include/run.h
+@@ -1,6 +1,10 @@
++#ifndef VEQ_RUN_H
++#define VEQ_RUN_H
++
+ // Adaptive matching order with new extendable candidate definition
+ #include "VEQ.h"
+ 
++namespace VEQ {
+ void writeAnswer(string& answerFile) {
+   ofstream outFile(answerFile);
+   for (int g = 0; g < nGraph; ++g) {
+@@ -36,7 +40,7 @@ inline bool BuildCS() {
+   return true;
+ }
+ 
+-inline void ProcessQuery(string q_name, string output_file) {
++inline bool ProcessQuery(uint64_t& embedding_cnt, double& time_total) {
+   bool isCandidate;
+   chrono::high_resolution_clock::time_point startClock, endClock;
+   for (int x = 0; x < queryGraph.size(); ++x) {
+@@ -68,6 +72,8 @@ inline void ProcessQuery(string q_name, string output_file) {
+       startPoint = GetClock();
+ 
+       startClock = GetClock();
++      endTime = GetClockNan();
++      endTime += timeLimit * 1000 * 1000;
+       isCandidate = BuildCS();
+       endClock = GetClock();
+       filteringTime += TimeDiffInMilliseconds(startClock, endClock);
+@@ -96,22 +102,11 @@ inline void ProcessQuery(string q_name, string output_file) {
+     cout << "Exceeded Time Limit: " << (exceedTimeLimit ? 1 : 0) << endl;
+     Deallocate(*currQ);
+ #endif
+-    totalTime = filteringTime + verificationTime;
+-    cout << "Total Recursive Call Count: " << recursiveCallCount << endl;
+-#ifdef SUBGRAPH_MATCHING
+-    cout << "Number of Matches: " << doubleToString(nMatch) << endl;
+-#else
+-    cout << "Number of Candidate Graphs: " << nCandidate << endl;
+-    cout << "Number of Answer Graphs: " << nMatch << endl;
+-    // writeAnswer(answerFile);
+-#endif
+-    cout << "Filtering Time (ms): " << filteringTime << endl;
+-    cout << "Verification Time (ms): " << verificationTime << endl;
+-    cout << "Processing Time (ms): " << totalTime << endl;
+-    ofstream of(output_file, ios::app);
+-    if (of.is_open()) {
+-      of <<q_name << ',' << nMatch << ',' << filteringTime << ',' << verificationTime << ',' << (totalTime>1000?1000:totalTime) << endl;
+-      of.close();
+-    }
++    embedding_cnt = (uint64_t)nMatch;
++    time_total = filteringTime + verificationTime;
++    return exceedTimeLimit;
+   }
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_RUN_H
+diff --git a/sourceCode/VEQ/include/structure.h b/sourceCode/VEQ/include/structure.h
+index 39cbd4d..20fa9a5 100644
+--- a/sourceCode/VEQ/include/structure.h
++++ b/sourceCode/VEQ/include/structure.h
+@@ -1,5 +1,9 @@
++#ifndef VEQ_STRUCTURE_H
++#define VEQ_STRUCTURE_H
++
+ #include "util.h"
+ 
++namespace VEQ {
+ #ifdef FILTERING_BY_NEIGHBOR_SAFETY
+ enum direction { topDown, bottomUp };
+ enum ngbType { parentNgb, childNgb, allNgb };
+@@ -161,3 +165,6 @@ struct Queue {
+ 
+   int set_minPosition(int minPosition) { return this->minPosition = minPosition; }
+ };
++
++}  // namespace VEQ
++#endif  // VEQ_STRUCTURE_H
+diff --git a/sourceCode/VEQ/include/util.h b/sourceCode/VEQ/include/util.h
+index 69c2448..72d27c9 100644
+--- a/sourceCode/VEQ/include/util.h
++++ b/sourceCode/VEQ/include/util.h
+@@ -1,8 +1,12 @@
++#ifndef VEQ_UTIL_H
++#define VEQ_UTIL_H
++
+ #include <limits.h>  // for LLONG_MAX which is 9223372036854775807
+ 
+ #include "process.h"
+ using namespace std;
+ 
++namespace VEQ {
+ // Variables for search
+ int uCurr;
+ int labelID = -1;
+@@ -183,3 +187,6 @@ inline double factorization(int x) {
+ 
+   return result;
+ }
++
++}  // namespace VEQ
++#endif  // VEQ_UTIL_H
+diff --git a/sourceCode/VEQ/veq.cpp b/sourceCode/VEQ/veq.cpp
+index d5dd510..7d8824c 100644
+--- a/sourceCode/VEQ/veq.cpp
++++ b/sourceCode/VEQ/veq.cpp
+@@ -1,83 +1,20 @@
+-#include "include/run.h"
+ #include "veq.h"
+-using namespace std;
+ 
+-// Subgraph query
+-// Usage: ./Program -d[dataFormat] [dataFile] -q[queryFormat] [queryFile] -o
+-// [answerFile]
+-
+-// Subgraph matching
+-// Usage: ./Program -d[dataFormat] [dataFile] -q[queryFormat] [queryFile]
+-
+-// dataFormat:
+-// -i: Igraph format
+-// -g: GFU format
+-
+-// queryFormat:
+-// -c: CFL format
+-// -i: Igraph format
+-// -g: GFU format
+-
+-int src_veq(string output_file) {
+-  // setvbuf(stdout, NULL, _IOLBF, 0);
+-  // int queryFormat = GFU_FORMAT;
+-  // int dataFormat = GFU_FORMAT;
+-  // string output_file = "output.txt";
+-  // for (int i = 1; i < argc; ++i) {
+-  //   if (argv[i][0] == '-') {
+-  //     switch (argv[i][1]) {
+-  //       case 'd':
+-  //         switch (argv[i][2]) {
+-  //           case 'i':
+-  //             dataFormat = IGRAPH_FORMAT;
+-  //             break;
+-  //           case 'g':
+-  //             dataFormat = GFU_FORMAT;
+-  //             break;
+-  //         }
+-  //         dataGraphFile = argv[i + 1];
+-  //         break;
+-  //       case 'q':
+-  //         switch (argv[i][2]) {
+-  //           case 'c':
+-  //             queryFormat = CFL_FORMAT;
+-  //             break;
+-  //           case 'i':
+-  //             queryFormat = IGRAPH_FORMAT;
+-  //             break;
+-  //           case 'g':
+-  //             queryFormat = GFU_FORMAT;
+-  //             break;
+-  //         }
+-  //         queryGraphFile = argv[i + 1];
+-  //         break;
+-  //       case 'o':
+-  //         answerFile = argv[i + 1];
+-  //         output_file = argv[i + 1];
+-  //         break;
+-  //     }
+-  //   } 
+-  // }
+-  // cout << "Data file: " << dataGraphFile << endl;
+-  // cout << "Query file: " << queryGraphFile << endl;
+-  // cout << "Output file: " << answerFile << endl;
+-  // if (dataFormat == IGRAPH_FORMAT)
+-  //   ReadIgraphFormat(dataGraphFile, dataGraph);
+-  // else
+-  //   ReadGFUFormat(dataGraphFile, dataGraph);
+-  // // ReadGraphFormat(dataGraphFile, dataGraph);
++namespace VEQ {
+ 
++void init_veq(std::string d_graph, int64_t time_limit) {
++  timeLimit = time_limit;
++  ReadIgraphFormat(d_graph, dataGraph);
+   ProcessDataGraphs();
+   AllocateForDataGraph();
++}
+ 
+-  // if (queryFormat == CFL_FORMAT)
+-  //   ReadCFLFormat(queryGraphFile, queryGraph);
+-  // else if (queryFormat == IGRAPH_FORMAT)
+-  //   ReadIgraphFormat(queryGraphFile, queryGraph);
+-  // else
+-  //   ReadGFUFormat(queryGraphFile, queryGraph);
+-  // // ReadGraphFormat(queryGraphFile, queryGraph);
+-
+-  ProcessQuery(queryGraphFile.substr(queryGraphFile.find_last_of('/')+1),output_file);
+-  return 0;
++bool src_veq(std::string q_graph, uint64_t& embedding_cnt, double& time_total) {
++  // one query graph per time
++  if (queryGraph.size() != 0) delete queryGraph.back();
++  queryGraph.clear();
++  ReadIgraphFormat(q_graph, queryGraph);
++  return ProcessQuery(embedding_cnt, time_total);
+ }
++
++}  // namespace VEQ
+diff --git a/sourceCode/VEQ/veq.h b/sourceCode/VEQ/veq.h
+index d34997f..771bf31 100644
+--- a/sourceCode/VEQ/veq.h
++++ b/sourceCode/VEQ/veq.h
+@@ -1,11 +1,23 @@
+-#ifndef __VEQ_H__
+-#define __VEQ_H__
++#ifndef SRC_VEQ_H
++#define SRC_VEQ_H
+ 
+-/// @brief transform the structs, from CSR to VEQ
+-void transformStruct() {
++#include "include/run.h"
++#include "graph/graph.h"
+ 
+-}
++namespace VEQ {
+ 
+-int src_veq(string output_file);
++/// @brief init data graph & timeLimit for veq
++/// @param d_graph data graph
++/// @param time_limit The unit is milliseconds
++void init_veq(std::string d_graph, int64_t time_limit);
+ 
+-#endif  //__VEQ_H__
+\ No newline at end of file
++/// @brief find q_graph on given dataGraph
++/// @param q_graph query graph
++/// @param embedding_cnt necessary variable, total num generated in limited_time
++/// @param time_total necessary variable, total time, the unit is second
++/// @return overtime or not
++bool src_veq(std::string q_graph, uint64_t& embedding_cnt, double& time_total);
++
++}  // namespace VEQ
++
++#endif  //SRC_VEQ_H
+-- 
+2.34.1
+

@@ -2,6 +2,7 @@
 #define SUBGRAPHMATCHING_BUILDTABLE_H
 
 #include "graph/graph.h"
+#include "utility/QFilter.h"
 #include <vector>
 class BuildEdgeIndex {
 public:
@@ -10,5 +11,6 @@ public:
     static void buildCansIndex(const Graph* data_graph, const Graph* query_graph, ui** candidates, ui* candidates_count,
                             Edges*** edge_matrix);
 };
+
 
 #endif //SUBGRAPHMATCHING_BUILDTABLE_H

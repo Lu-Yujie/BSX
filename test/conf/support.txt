@@ -1,0 +1,3 @@
+filter:  GQL, LDF, NLF, TSO, CFL, DPiso, VEQ, CECI, RM, CaLiG
+order: QSI, GQL, TSO, CFL, DPiso, CECI, RI, VF2PP, VF3, RM
+engine: BS1, LFTJ, GQL, QSI, VF3, VEQ, DPiso, CECI, RM, KSS, BSX

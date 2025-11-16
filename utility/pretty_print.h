@@ -132,7 +132,7 @@ namespace pretty_print {
 
                         if (++it == the_end) break;
 
-                        if (delimiters_type::values.delimiter != nullptr)
+                        if (delimiters_type::values.delimiter != NULL)
                             stream << delimiters_type::values.delimiter;
                     }
                 }
@@ -143,12 +143,12 @@ namespace pretty_print {
                 : container_(container) {}
 
         inline void operator()(ostream_type &stream) const {
-            if (delimiters_type::values.prefix != nullptr)
+            if (delimiters_type::values.prefix != NULL)
                 stream << delimiters_type::values.prefix;
 
             printer<T>::print_body(container_, stream);
 
-            if (delimiters_type::values.postfix != nullptr)
+            if (delimiters_type::values.postfix != NULL)
                 stream << delimiters_type::values.postfix;
         }
 
@@ -165,7 +165,7 @@ namespace pretty_print {
 
         static void print_body(const std::pair<T1, T2> &c, ostream_type &stream) {
             stream << c.first;
-            if (print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter != nullptr)
+            if (print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter != NULL)
                 stream << print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter;
             stream << c.second;
         }
@@ -198,7 +198,7 @@ namespace pretty_print {
 
         template<std::size_t N>
         static void tuple_print(const element_type &c, ostream_type &stream, Int<N>) {
-            if (print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter != nullptr)
+            if (print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter != NULL)
                 stream << print_container_helper<T, TChar, TCharTraits, TDelimiters>::delimiters_type::values.delimiter;
 
             stream << std::get<N>(c);

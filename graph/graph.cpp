@@ -23,6 +23,29 @@ void Graph::BuildReverseIndex() {
 }
 
 #if OPTIMIZED_VLABELED_GRAPH == 1
+
+#ifdef ELABELED_GRAPH
+void Graph::BuildNLF() {
+    nlf_ = new std::unordered_map<LabelID, std::unordered_map<LabelID, ui>>[vertices_count_];
+    for (ui i = 0; i < vertices_count_; ++i) {
+        ui count;
+        const VertexID* neighbors = getVertexNeighbors(i, count);
+        const LabelID* elabels = getVertexEdgeLabels(i, count);
+
+        for (ui j = 0; j < count; ++j) {
+            VertexID u = neighbors[j];
+            LabelID vlabel = getVertexLabel(u);
+            LabelID elabel = elabels[j];
+            auto nlf = nlf_[i].find(vlabel);
+            if (nlf == nlf_[i].end() || nlf->second.find(elabel) == nlf->second.end()) {
+                nlf_[i][vlabel][elabel] = 1;
+            } else {
+                nlf_[i][vlabel][elabel]++;
+            }
+        }
+    }
+}
+#else
 void Graph::BuildNLF() {
     nlf_ = new std::unordered_map<LabelID, ui>[vertices_count_];
     for (ui i = 0; i < vertices_count_; ++i) {
@@ -36,9 +59,10 @@ void Graph::BuildNLF() {
         }
     }
 }
+#endif
 
 void Graph::BuildVLabelOffset() {
-    size_t vlabels_offset_size = (size_t)vertices_count_ * vlabels_count_ + 1;
+    uint64_t vlabels_offset_size = (uint64_t)vertices_count_ * vlabels_count_ + 1;
     vlabels_offsets_ = new ui[vlabels_offset_size];
     std::fill(vlabels_offsets_, vlabels_offsets_ + vlabels_offset_size, 0);
 
@@ -93,6 +117,12 @@ void Graph::loadGraphFromFile(const std::string &file_path) {
     vlabels_count_ = 0;
     max_degree_ = 0;
 
+#ifdef ELABELED_GRAPH
+    elabels_ = new VertexID[edges_count_ * 2];
+    elabels_count_ = 0;
+    LabelID max_edge_id = 0;
+#endif
+
     LabelID max_vlabel_id = 0;
     std::vector<ui> neighbors_offset(vertices_count_, 0);
 
@@ -131,11 +161,23 @@ void Graph::loadGraphFromFile(const std::string &file_path) {
 
             neighbors_offset[begin] += 1;
             neighbors_offset[end] += 1;
+#ifdef ELABELED_GRAPH
+            LabelID elabel;
+            infile >> elabel;
+            elabels_[begin_offset] = elabel;
+            elabels_[end_offset] = elabel;
+            if (elabel > max_edge_id) {
+                max_edge_id = elabel;
+            }
+#endif
         }
     }
 
     infile.close();
     vlabels_count_ = (ui)vlabels_frequency_.size() > (max_vlabel_id + 1) ? (ui)vlabels_frequency_.size() : max_vlabel_id + 1;
+#ifdef ELABELED_GRAPH
+    elabels_count_ = max_edge_id+1;
+#endif
     for (auto element : vlabels_frequency_) {
         if (element.second > max_vlabel_frequency_) {
             max_vlabel_frequency_ = element.second;
@@ -160,6 +202,9 @@ void Graph::loadGraphFromFile(const std::string &file_path) {
 void Graph::printGraphMetaData() {
     std::cout << "|V|: " << vertices_count_ << ", |E|: " << edges_count_ << ", |\u03A3|: " << vlabels_count_ << std::endl;
     std::cout << "Max Degree: " << max_degree_ << ", Max Label Frequency: " << max_vlabel_frequency_ << std::endl;
+#ifdef ELABELED_GRAPH
+    std::cout << "#Edge Label: " << elabels_count_ << std::endl;
+#endif
 }
 
 void Graph::buildCoreTable() {
@@ -214,7 +259,7 @@ void Graph::loadGraphFromFileCompressed(const std::string &degree_path, const st
     }
 
     start = std::chrono::high_resolution_clock::now();
-    size_t neighbors_count = (size_t)edges_count_ * 2;
+    uint64_t neighbors_count = (uint64_t)edges_count_ * 2;
     neighbors_ = new ui[neighbors_count];
 
     offsets_[0] = 0;
@@ -319,7 +364,7 @@ void Graph::storeComparessedGraph(const std::string& degree_path, const std::str
     }
 
     int int_size = sizeof(int);
-    size_t vertex_array_bytes = ((size_t)vertices_count_) * 4;
+    uint64_t vertex_array_bytes = ((uint64_t)vertices_count_) * 4;
     deg_outputfile.write(reinterpret_cast<const char *>(&int_size), 4);
     deg_outputfile.write(reinterpret_cast<const char *>(&vertices_count_), 4);
     deg_outputfile.write(reinterpret_cast<const char *>(&edges_count_), 4);
@@ -340,7 +385,7 @@ void Graph::storeComparessedGraph(const std::string& degree_path, const std::str
         exit(-1);
     }
 
-    size_t edge_array_bytes = ((size_t)edges_count_ * 2) * 4;
+    uint64_t edge_array_bytes = ((uint64_t)edges_count_ * 2) * 4;
     edge_outputfile.write(reinterpret_cast<const char *>(neighbors_), edge_array_bytes);
 
     edge_outputfile.close();
@@ -356,7 +401,7 @@ void Graph::storeComparessedGraph(const std::string& degree_path, const std::str
         exit(-1);
     }
 
-    size_t vlabel_array_bytes = ((size_t)vertices_count_) * 4;
+    uint64_t vlabel_array_bytes = ((uint64_t)vertices_count_) * 4;
     vlabel_outputfile.write(reinterpret_cast<const char *>(vlabels_), vlabel_array_bytes);
 
     vlabel_outputfile.close();
