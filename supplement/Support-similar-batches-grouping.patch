@@ -1,6 +1,6 @@
-From 13852d46da788598ef596cdafa9aee1130690eac Mon Sep 17 00:00:00 2001
+From edde84e2e76cb816fbc1c3938f7871856cf94ed7 Mon Sep 17 00:00:00 2001
 From: bsx.mail
-Date: Wed, 16 Oct 2024 20:16:59 +0800
+Date: Sat, 15 Nov 2025 23:30:04 +0800
 Subject: [PATCH] Support similar batches grouping
 
 ---
@@ -26,10 +26,10 @@ index 0ddc087..353bb5a 100644
  #define PRINT_SEPARATOR "------------------------------"
  
 diff --git a/matching/EvaluateQuery.cpp b/matching/EvaluateQuery.cpp
-index a5ed58e..6e56eba 100644
+index 4a356f4..a6fae26 100644
 --- a/matching/EvaluateQuery.cpp
 +++ b/matching/EvaluateQuery.cpp
-@@ -288,6 +288,10 @@ void EvaluateQuery::releaseBuffer(ui q_num, ui *idx, ui *idx_count, ui *embeddin
+@@ -292,6 +292,10 @@ void EvaluateQuery::releaseBuffer(ui q_num, ui *idx, ui *idx_count, ui *embeddin
      delete[] bn;
  }
  
@@ -40,7 +40,7 @@ index a5ed58e..6e56eba 100644
  /**
   * use bsx method
  */
-@@ -308,6 +312,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -312,6 +316,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
      // new index structure, update in time, 24-3-7
      BSXIndex index(query_graph, data_graph, edge_matrix, candidates, candidates_count, num_cover);
      auto& batch_info = index.batch_info;
@@ -48,7 +48,7 @@ index a5ed58e..6e56eba 100644
  
      // auxiliary data structure
      auto& visited_u = index.visited_u;
-@@ -320,6 +325,29 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -324,6 +329,29 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
      visited_u[start_vertex] = true;
      auto& level_embeddings = index.level_embeddings_;
  
@@ -78,7 +78,7 @@ index a5ed58e..6e56eba 100644
      // init info of start vertex
      batch_info[start_vertex].add();
      bsxComEqBatch(index, start_vertex);
-@@ -327,6 +355,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -331,6 +359,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
      index.valid_cans_[start_vertex].push(new VertexID[batch_info[start_vertex].maxCnt_.top()]);
      index.valid_cnt_[start_vertex].push(0);
  
@@ -91,7 +91,7 @@ index a5ed58e..6e56eba 100644
  #ifdef ANALYZE_DUPLICATE
      auto g_name = query_graph->g_name;
      size_t last_slash_pos = g_name.find_last_of('/');
-@@ -353,6 +387,20 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -357,6 +391,20 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
      while (true) {
          while (batch_info[depth2u[cur_depth]].idx_.top() < batch_info[depth2u[cur_depth]].num_.top()) {
              VertexID u = depth2u[cur_depth];
@@ -111,8 +111,8 @@ index a5ed58e..6e56eba 100644
 +#endif
              ui cur_batch_cnt;
              VertexID* cur_batch = batch_info[u].cur_batch(cur_batch_cnt);
- 
-@@ -366,6 +414,15 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+             if (TimeOp::getClockNan() >= time_limit) {
+@@ -373,6 +421,15 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
  
              VertexID failed_u = bsxRefine(index, u);
              if (failed_u != (ui)-1) {  // no valid cans for next depth
@@ -128,8 +128,8 @@ index a5ed58e..6e56eba 100644
                  continue;
              }
  
-@@ -403,6 +460,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
-                 mpz_add(embedding_cnt, embedding_cnt, level_embeddings);
+@@ -412,6 +469,12 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+                 }
                  // next batch
                  bsxDeRefine(index);
 +#if BSX_SIM_THRESHOLD != 100
@@ -141,7 +141,7 @@ index a5ed58e..6e56eba 100644
              } else {
                  cur_depth++;
                  VertexID cur_u = bsxGenNxtU(index, order, cur_depth, num_cover);
-@@ -416,6 +479,17 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -425,6 +488,17 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
                  index.valid_cans_[cur_u].push(new VertexID[batch_info[cur_u].maxCnt_.top()]);
                  index.valid_cnt_[cur_u].push(0);
                  visited_u[cur_u] = true;
@@ -159,7 +159,7 @@ index a5ed58e..6e56eba 100644
              }
          }
  
-@@ -428,6 +502,34 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -437,6 +511,34 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
          depth2u.resize(cur_depth+1);
          visited_u[last_u] = false;
  
@@ -194,7 +194,7 @@ index a5ed58e..6e56eba 100644
          batch_info[last_u].pop();
          delete[] index.valid_cans_[last_u].top();
          index.valid_cans_[last_u].pop();
-@@ -438,6 +540,10 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
+@@ -447,6 +549,10 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
      // Release the buffer.
      EXIT:
  
@@ -205,7 +205,7 @@ index a5ed58e..6e56eba 100644
  #ifdef ANALYZE_DUPLICATE
      for (ui i = 1; i < q_num; i++) { 
          out_files[i-1].close();
-@@ -675,6 +781,9 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+@@ -684,6 +790,9 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
      auto& nodes = index.valid_cans_[u].top();
      auto num_idxs = idxs.size();
      auto& batches = index.batch_info[u].nodes_.top();
@@ -215,7 +215,7 @@ index a5ed58e..6e56eba 100644
      auto& offset = index.batch_info[u].offset_.top();
      auto& cnt = index.batch_info[u].cnt_.top();
      auto& num = index.batch_info[u].num_.top();
-@@ -692,6 +801,18 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+@@ -701,6 +810,18 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
              auto& unbr = unbrs[unbr_idx];
              auto& edges = index.index_[u][unbr].top();
              if (edges->offset_[idx+1] - edges->offset_[idx] == 0) {
@@ -234,7 +234,7 @@ index a5ed58e..6e56eba 100644
                  batch_idx[i] = (ui)-1;
                  break;
              }
-@@ -702,10 +823,17 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+@@ -711,10 +832,17 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
      for (ui i = 0; i < num_idxs; i++) {
          auto& idx = idxs[i];
          if (batch_idx[i] != 0) continue;
@@ -253,7 +253,7 @@ index a5ed58e..6e56eba 100644
          for (ui j = i+1; j < num_idxs; j++) {
              if (batch_idx[j] != 0) continue;
              auto ev_idx = idxs[j];
-@@ -729,7 +857,15 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+@@ -738,7 +866,15 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
              }
              if (equ == true) {
                  batch_idx[j] = batch_cnt;
@@ -270,7 +270,7 @@ index a5ed58e..6e56eba 100644
              }
          }
          // process max_cnt
-@@ -737,10 +873,107 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
+@@ -746,10 +882,107 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
          // no need for sort, because the idxs have been sorted and this fun. will not break it
          // std::sort(batch+offset[num], batch+(offset[num]+cnt[num]));
          num++;
@@ -379,10 +379,10 @@ index a5ed58e..6e56eba 100644
  // if success, return -1, else return failed uId
  ui
 diff --git a/matching/EvaluateQuery.h b/matching/EvaluateQuery.h
-index 480d4a5..98a574b 100644
+index 8c7795b..b863181 100644
 --- a/matching/EvaluateQuery.h
 +++ b/matching/EvaluateQuery.h
-@@ -45,6 +45,8 @@ private:
+@@ -47,6 +47,8 @@ private:
  
      static void bsxComEqBatch(BSXIndex& index, VertexID u);
  
@@ -483,5 +483,5 @@ index 455d2d6..f74aad8 100644
      ~BatchInfo() {
          while(!nodes_.empty()) {
 -- 
-2.34.1
+2.33.0.windows.2
 
