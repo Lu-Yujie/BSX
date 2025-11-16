@@ -9,8 +9,6 @@ typedef unsigned int ui;
 typedef uint32_t VertexID;
 typedef ui LabelID;
 
-#define UINT_MAX std::numeric_limits<ui>::max()
-
 enum MatchingIndexType {
     VertexCentric = 0,
     EdgeCentric = 1
@@ -41,14 +39,14 @@ public:
     VertexID* children_;
     VertexID* bn_;
     VertexID* fn_;
-    size_t estimated_embeddings_num_;
+    uint64_t estimated_embeddings_num_;
 public:
     TreeNode() {
         id_ = 0;
-        under_level_ = nullptr;
-        bn_ = nullptr;
-        fn_ = nullptr;
-        children_ = nullptr;
+        under_level_ = NULL;
+        bn_ = NULL;
+        fn_ = NULL;
+        children_ = NULL;
         parent_ = 0;
         level_ = 0;
         under_level_count_ = 0;
@@ -82,8 +80,8 @@ public:
     ui max_degree_;
 public:
     Edges() {
-        offset_ = nullptr;
-        edge_ = nullptr;
+        offset_ = NULL;
+        edge_ = NULL;
         vertex_count_ = 0;
         edge_count_ = 0;
         max_degree_ = 0;
