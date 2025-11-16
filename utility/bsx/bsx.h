@@ -6,12 +6,44 @@
 */
 #include <stack>
 #include <unordered_map>
+#include <vector>
 #include <bitset>
 #include <gmp.h>
-#include "common.h"
+#include "graph/graph.h"
 #include "pretty_print.h"
 using namespace std;
 typedef unsigned int ui;
+
+class b_search{
+public:
+/**
+ * universal binary search for ui*
+*/
+// small array: linear seach
+static ui smallArraySearch(const ui* arr, ui size, ui target) {
+    for (ui i = 0; i < size; ++i) {
+        if (arr[i] == target)
+            return i;
+    }
+    return (ui)-1;
+}
+
+// large array, use lower bound func
+static ui largeArraySearch(const ui* arr, ui size, ui target) {
+    auto ptr = lower_bound(arr, arr + size, target);
+    if (ptr != arr + size && *ptr == target)
+        return ptr - arr;
+    else
+        return (ui)-1;
+}
+
+static ui search(const ui* arr, ui size, ui target) {
+    if (size <= 4) { // 可根据经验设定阈值
+        return smallArraySearch(arr, size, target);
+    }
+    return largeArraySearch(arr, size, target);
+}
+};  // class b_search
 
 /**structures used to store batch info
  * nodes: store batches which are seperated by offset
@@ -97,6 +129,30 @@ struct BatchInfo {
     }
 };
 
+/**
+ * Embedding info
+ * mapping between depth, u(query node), v(data node)
+ * u2v: u->v, each u only match to one v
+ * v2depth: v->depth, too much v, use map instead of array
+ * depth2u: depth->u, use vector for dynamic tree height
+*/
+class Embedding{
+public:
+    VertexID* u2v;               // u->v, use the 1st v of batch
+    vector<VertexID> depth2u;    // depth->u
+
+    Embedding(ui cnt) {
+        u2v = new VertexID[cnt];
+        depth2u.reserve(cnt);
+    }
+    ~Embedding() {
+        delete[] u2v;
+    }
+};
+
+/**
+ * new index structure, update in time
+*/
 class BSXIndex {
 public:
     stack<Edges*>** index_;  // can be used to judge edge existence, index_[u_1][u_2].size() != 0
@@ -125,6 +181,7 @@ public:
         num_cover_ = num_cover;
         auto qnum = q_graph->getVerticesCount();
         auto dnum = d_graph->getVerticesCount();
+        auto num_indep = qnum - num_cover;
         index_ = new stack<Edges*>*[qnum];
         batch_info = new BatchInfo[qnum];
         visited_u = new bool[qnum];
@@ -157,6 +214,7 @@ public:
             valid_cnt_[i].push(cans_cnt[i]);
             index_cans_[i] = cans[i];
             index_cnt_[i] = cans_cnt[i];
+            // cached_uv_nbrs_[i].push(nullptr);
         }
         mpz_init(level_embeddings_);
         mpz_init(label_embeddings_);
@@ -200,7 +258,7 @@ public:
     // get Neighbors of v(can of u_1) from u_1 to u_2
     // used to generate valid cans, by union nbrs, 24-3-7
     const VertexID* getNeighbors(VertexID u_1, VertexID u_2, VertexID v, ui& nbrs_cnt) {
-        auto v_idx = b_search<ui*>::search(index_cans_[u_1], index_cnt_[u_1], v);
+        auto v_idx = b_search::search(index_cans_[u_1], index_cnt_[u_1], v);
         if (v_idx == (ui)-1) {
             cout << "can't find " << v << " in index_cans_[" << u_1 << "]: ";
             for (ui i = 0; i < index_cnt_[u_1]; i++) cout << index_cans_[u_1][i] << ", ";
@@ -215,12 +273,31 @@ public:
     // get all Neighbors(valid) of can_v of u, sorted
     // used to seperate nodes, 24-3-7
     VertexID* getNeighbors(VertexID u, VertexID v, ui& nbrs_cnt) {
+        // if (cached_uv_nbrs_[u].top() != nullptr) {
+        //     auto nbrs_iter = cached_uv_nbrs_[u].top()->find(v);
+        //     if (nbrs_iter != cached_uv_nbrs_[u].top()->end()) {
+        //         nbrs_cnt = nbrs_iter->second.first;
+        //         return nbrs_iter->second.second;
+        //     }
+        // }
         ui unbrs_cnt;
         set<VertexID> nbrs;
         auto unbrs = q_graph_->getVertexNeighbors(u, unbrs_cnt);
+        // cout << "unbrs_cnt: "<< unbrs_cnt << endl;
         for (ui i = 0; i < unbrs_cnt; i++ ) {
             auto& edges = *(index_[u][unbrs[i]].top());
-            auto v_idx = b_search<ui*>::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
+            // cout << "edges of u_" << u << " & " << "nbr_" << unbrs[i] << endl;
+            // cout << "edge: ";
+            // for (ui j = 0; j < edges.offset_[edges.vertex_count_]; j++) {
+            //     cout << edges.edge_[j] << ',';
+            // }
+            // cout << endl;
+            // cout << "offset: ";
+            // for (ui j = 0; j <= valid_cnt_[u].top(); j++) {
+            //     cout << edges.offset_[j] << ',';
+            // }
+            // cout << endl;
+            auto v_idx = b_search::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
             if (v_idx == (ui)-1) {
                 cout << "BSXIndex::getNeighbors_uv::v_idx == (ui)-1" << endl;
                 exit(1);
@@ -233,17 +310,21 @@ public:
         VertexID* nbrs_ptr = new ui[nbrs_cnt];
         ui nbr_idx = 0;
         for (auto& nbr : nbrs) nbrs_ptr[nbr_idx++] = nbr;
+        // // cache the result
+        // if (cached_uv_nbrs_[u].top() == nullptr) {
+        //     cached_uv_nbrs_[u].top() = new unordered_map<VertexID, pair<ui, VertexID*>>;
+        // }
+        // cached_uv_nbrs_[u].top()->emplace(v, make_pair(nbrs_cnt, nbrs_ptr));
         return nbrs_ptr;
     }
 
     /**update the structure, check nothing
      * based on new valid_cans, valid_cnt & influneced
     */
-    ui updateIndex(bool* influenced, VertexID cur_u) {
+    ui updateIndex(bool* influenced) {
         auto q_num = q_graph_->getVerticesCount();
         bool* nbr_updated = new bool[q_num];
-        std::copy(visited_u, visited_u+q_num, nbr_updated);
-        nbr_updated[cur_u] = false;
+        memset(nbr_updated, false, sizeof(bool)*q_num);
         ui* cans_idx = new ui[d_graph_->getVerticesCount()];
         memset(cans_idx, 0, sizeof(ui)*d_graph_->getVerticesCount());
         vector<VertexID> updated_cans_idx;  // used to recover cans_idx
@@ -251,6 +332,7 @@ public:
 
         for (ui u = 0; u < q_num; u++) {
             if (!influenced[u]) continue;
+            // cout << "update u_" << u << " & its nbrs" << endl;
             nbr_updated[u] = true;
 
             // build cans_idx of u, and then build edges from nbr to u.
@@ -262,12 +344,23 @@ public:
                 updated_cans_idx_cnt++;
             }
 
+            // cout << "cans of u_" << u << ": ";
+            // for (ui i = 0; i < valid_cnt_[u].top(); i++) {
+            //     cout << valid_cans_[u].top()[i] << ',';
+            // }
+            // cout << endl;
+
             // update all nbrs influenced
             ui nbrs_cnt;
             auto nbrs = q_graph_->getVertexNeighbors(u, nbrs_cnt);
             for (ui i = 0; i < nbrs_cnt; i++) {
                 auto& nbr = nbrs[i];
                 if (nbr_updated[nbr]) continue;
+                // cout << "cans of nbr_" << nbr << ": ";
+                // for (ui i = 0; i < valid_cnt_[nbr].top(); i++) {
+                //     cout << valid_cans_[nbr].top()[i] << ',';
+                // }
+                // cout << endl;
 
                 // update edges between u & nbr
                 auto nbr2u_edges = new Edges;
@@ -286,6 +379,11 @@ public:
                     nbr2u_edges->offset_[j] = local_edge_count;
                     ui nbr_v_nbrs_cnt;
                     auto nbr_v_nbrs = getNeighbors(nbr, u, v, nbr_v_nbrs_cnt);  // error
+                    // cout << "nbr_v_nbrs:" << nbr << ',' << u << ',' << v << ": ";
+                    // for (ui i = 0; i < nbr_v_nbrs_cnt; i++) {
+                    //     cout << nbr_v_nbrs[i] << ',';
+                    // }
+                    // cout << endl;
                     for (ui k = 0; k < nbr_v_nbrs_cnt; k++) {
                         auto nbr_v_nbr = nbr_v_nbrs[k];
                         if (cans_idx[nbr_v_nbr] != 0) {
@@ -300,6 +398,11 @@ public:
                 nbr2u_edges->edge_count_ = local_edge_count;
                 nbr2u_edges->edge_ = new VertexID[local_edge_count];
                 copy(temp_edges.begin(), temp_edges.end(), nbr2u_edges->edge_);
+                // cout << "temp_edges: ";
+                // for (auto& temp_edge:temp_edges){
+                //     cout << temp_edge << ',';
+                // }
+                // cout << endl;
                 temp_edges.clear();
 
                 u2nbr_edges->edge_count_ = local_edge_count;
@@ -321,9 +424,43 @@ public:
                 }
                 u2nbr_edges->offset_[0] = 0;
 
+                // shrink edges, based on offset
+                // can't shrink infact, because it may due to cascade reaction.
+                //    if valid_cans change(indep node didn't propagate), then update its nbrs
+                // if we just change u side, then cascade reaction won't happen
+                //   This will work because the nbrs side will not be influenced if u is changed
+                //   And benefited from the storage of VertexID in edges instead of v_idx, we
+                //   do not need to update the edges.edge_ of nbrs&u
+                // But, if valid_cans of u is changed, we need to re-compute its all nbrs
+                //   as a final method, run some tests if there are enough time, 24-4-5
+                //   TODO: write delete method and do tests
+
                 // add new edges(nbrs info)
                 index_[nbr][u].push(nbr2u_edges);
                 index_[u][nbr].push(u2nbr_edges);
+                // cout << "update edges to " << nbr << " .size: " << index_[nbr][u].size() << ", " << index_[u][nbr].size() << endl;
+                // cout << "nbr2u" << endl;
+                // cout << "edge: ";
+                // for (ui i = 0; i < nbr2u_edges->edge_count_; i++) {
+                //     cout << nbr2u_edges->edge_[i] << ',';
+                // }
+                // cout << endl;
+                // cout << "offset: ";
+                // for (ui i = 0; i <= nbr2u_edges->vertex_count_; i++) {
+                //     cout << nbr2u_edges->offset_[i] << ',';
+                // }
+                // cout << endl;
+                // cout << "u2nbr" << endl;
+                // cout << "edge: ";
+                // for (ui i = 0; i < u2nbr_edges->edge_count_; i++) {
+                //     cout << u2nbr_edges->edge_[i] << ',';
+                // }
+                // cout << endl;
+                // cout << "offset: ";
+                // for (ui i = 0; i <= u2nbr_edges->vertex_count_; i++) {
+                //     cout << u2nbr_edges->offset_[i] << ',';
+                // }
+                // cout << endl;
             }
 
             // recover cans_idx for next u

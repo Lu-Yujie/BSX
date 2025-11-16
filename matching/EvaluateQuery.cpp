@@ -3,12 +3,30 @@
 #include "rapidMatch/execution_tree/execution_tree_generator.h"
 #include "bsx/IndepSet.h"
 #include "bsx/nodeSim.h"
+#include "bsx/SetOp.h"
+#include "bsx/vcover.h"
 #include "timeOp.h"
 #include <vector>
 #include <cstring>
 
 #include "pretty_print.h"
 
+std::function<bool(std::pair<std::pair<VertexID, ui>, ui>, std::pair<std::pair<VertexID, ui>, ui>)>
+    EvaluateQuery::extendable_vertex_compare = [](std::pair<std::pair<VertexID, ui>, ui> l, std::pair<std::pair<VertexID, ui>, ui> r) {
+    if (l.first.second == 1 && r.first.second != 1) {
+        return true;
+    }
+    else if (l.first.second != 1 && r.first.second == 1) {
+        return false;
+    }
+    else
+    {
+        return l.second > r.second;
+    }
+};
+
+// 按照给定的order计算每个点邻居中匹配顺序在其之前的点的额数量
+// 其中需要把pivot点去掉，（不懂）
 void EvaluateQuery::generateBN(const Graph *query_graph, ui *order, ui *pivot, ui **&bn, ui *&bn_count) {
     ui q_num = query_graph->getVerticesCount();
     bn_count = new ui[q_num];
@@ -37,8 +55,37 @@ void EvaluateQuery::generateBN(const Graph *query_graph, ui *order, ui *pivot, u
     }
 }
 
+// 这个函数不需要去掉pivot（不懂）
+void EvaluateQuery::generateBN(const Graph *query_graph, ui *order, ui **&bn, ui *&bn_count) {
+    ui q_num = query_graph->getVerticesCount();
+    bn_count = new ui[q_num];
+    std::fill(bn_count, bn_count + q_num, 0);
+    bn = new ui *[q_num];
+    for (ui i = 0; i < q_num; ++i) {
+        bn[i] = new ui[q_num];
+    }
+
+    std::vector<bool> visited_vertices(q_num, false);
+    visited_vertices[order[0]] = true;
+    for (ui i = 1; i < q_num; ++i) {
+        VertexID vertex = order[i];
+
+        ui nbrs_cnt;
+        const ui *nbrs = query_graph->getVertexNeighbors(vertex, nbrs_cnt);
+        for (ui j = 0; j < nbrs_cnt; ++j) {
+            VertexID nbr = nbrs[j];
+
+            if (visited_vertices[nbr]) {
+                bn[i][bn_count[i]++] = nbr;
+            }
+        }
+
+        visited_vertices[vertex] = true;
+    }
+}
+
 bool
-EvaluateQuery::BS1Engine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix, ui **candidates,
+EvaluateQuery::ExploreEngine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix, ui **candidates,
                             ui *candidates_count, ui *order, ui *pivot, uint64_t output_limit_num, uint64_t &call_cnt,
                             mpz_t embedding_cnt, int64_t& time_limit) {
     // Generate the bn.
@@ -94,13 +141,13 @@ EvaluateQuery::BS1Engine(const Graph *data_graph, const Graph *query_graph, Edge
                 call_cnt += 1;
                 cur_depth += 1;
                 idx[cur_depth] = 0;
-                exploreGenValidCanIdx(data_graph, cur_depth, embedding, idx_embedding, idx_count,
+                generateValidCandidateIndex(data_graph, cur_depth, embedding, idx_embedding, idx_count,
                                             valid_candidate_idx, edge_matrix, visited_vertices, bn,
                                             bn_count, order, pivot, candidates, query_graph);
             }
         }
 
-        // backtrack
+        // 回溯部分
         cur_depth -= 1;
         if (cur_depth < 0)
             break;
@@ -149,7 +196,8 @@ EvaluateQuery::allocateBuffer(const Graph *data_graph, const Graph *query_graph,
     std::fill(visited_vertices, visited_vertices + d_num, false);
 }
 
-void EvaluateQuery::exploreGenValidCanIdx(const Graph *data_graph, ui depth, ui *embedding, ui *idx_embedding,
+// 检查indices结构上相邻candidate的每一条边，返回所有边都能匹配上的结果，也就是下一个匹配点
+void EvaluateQuery::generateValidCandidateIndex(const Graph *data_graph, ui depth, ui *embedding, ui *idx_embedding,
                                                 ui *idx_count, ui **valid_candidate_index, Edges ***edge_matrix,
                                                 bool *visited_vertices, ui **bn, ui *bn_cnt, ui *order, ui *pivot,
                                                 ui **candidates, const Graph *query_graph) {
@@ -218,6 +266,1847 @@ void EvaluateQuery::releaseBuffer(ui q_num, ui *idx, ui *idx_count, ui *embeddin
 
     delete[] valid_candidate_idx;
     delete[] bn;
+}
+
+bool
+EvaluateQuery::LFTJ(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix, ui **candidates,
+                    ui *candidates_count, ui *order, uint64_t output_limit_num, uint64_t &call_cnt, uint64_t &valid_vtx_cnt,
+                    mpz_t embedding_cnt, int64_t& time_limit) {
+    // Generate bn.
+    ui **bn;
+    ui *bn_count;
+    generateBN(query_graph, order, bn, bn_count);
+
+    // Allocate the memory buffer.
+    ui *idx;
+    ui *idx_count;
+    ui *embedding;
+    ui *idx_embedding;
+    ui *temp_buffer;
+    ui **valid_candidate_idx;
+    bool *visited_vertices;
+    allocateBuffer(data_graph, query_graph, candidates_count, idx, idx_count, embedding, idx_embedding,
+                   temp_buffer, valid_candidate_idx, visited_vertices);
+
+    bool overtime = false;
+    int cur_depth = 0;
+    ui max_depth = query_graph->getVerticesCount();
+    VertexID start_vertex = order[0];
+
+    idx[cur_depth] = 0;
+    idx_count[cur_depth] = candidates_count[start_vertex];
+
+    // // Valid vertex count statistics
+    // bool ** valid_vertices = new bool* [max_depth];
+    // for (int i = 0; i < max_depth; ++i) {
+    //     valid_vertices[i] = new bool[data_vertices_count];
+    //     std::fill(valid_vertices[i], valid_vertices[i] + data_vertices_count, false);
+    // }
+
+    for (ui i = 0; i < idx_count[cur_depth]; ++i) {
+        valid_candidate_idx[cur_depth][i] = i;
+    }
+
+#ifdef ENABLE_FAILING_SET
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> ancestors;
+    computeAncestor(query_graph, bn, bn_count, order, ancestors);
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> vec_failing_set(max_depth);
+    std::unordered_map<VertexID, VertexID> reverse_embedding;
+    reverse_embedding.reserve(MAXIMUM_QUERY_GRAPH_SIZE * 2);
+#endif
+    while (true) {
+        while (idx[cur_depth] < idx_count[cur_depth]) {
+            ui valid_idx = valid_candidate_idx[cur_depth][idx[cur_depth]];
+            VertexID u = order[cur_depth];
+            VertexID v = candidates[u][valid_idx];
+
+            if (visited_vertices[v]) {
+                idx[cur_depth] += 1;
+#ifdef ENABLE_FAILING_SET
+                vec_failing_set[cur_depth] = ancestors[u];
+                vec_failing_set[cur_depth] |= ancestors[reverse_embedding[v]];
+                vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+#endif
+                continue;
+            }
+
+            embedding[u] = v;
+            idx_embedding[u] = valid_idx;
+            visited_vertices[v] = true;
+            idx[cur_depth] += 1;
+
+#ifdef ENABLE_FAILING_SET
+            reverse_embedding[v] = u;
+#endif
+            if (TimeOp::getClockNan() >= time_limit) {
+                overtime = true;
+                goto EXIT;
+            }
+            if ((ui)cur_depth == max_depth - 1) {
+                // for (ui d = 0; d < max_depth; ++d){
+                //     valid_vertices[order[d]][embedding[d]] = true;
+                // }
+                mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                visited_vertices[v] = false;
+
+#ifdef ENABLE_FAILING_SET
+                reverse_embedding.erase(embedding[u]);
+                vec_failing_set[cur_depth].set();
+                vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+#endif
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
+            } else {
+                call_cnt += 1;
+                cur_depth += 1;
+
+                idx[cur_depth] = 0;
+                generateValidCandidateIndex(cur_depth, idx_embedding, idx_count, valid_candidate_idx, edge_matrix, bn,
+                                            bn_count, order, temp_buffer);
+
+#ifdef ENABLE_FAILING_SET
+                if (idx_count[cur_depth] == 0) {
+                    vec_failing_set[cur_depth - 1] = ancestors[order[cur_depth]];
+                } else {
+                    vec_failing_set[cur_depth - 1].reset();
+                }
+#endif
+            }
+        }
+        cur_depth -= 1;
+        if (cur_depth < 0)
+            break;
+        else {
+            VertexID u = order[cur_depth];
+#ifdef ENABLE_FAILING_SET
+            reverse_embedding.erase(embedding[u]);
+            if (cur_depth != 0) {
+                if (!vec_failing_set[cur_depth].test(u)) {
+                    vec_failing_set[cur_depth - 1] = vec_failing_set[cur_depth];
+                    idx[cur_depth] = idx_count[cur_depth];
+                } else {
+                    vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+                }
+            }
+#endif
+            visited_vertices[embedding[u]] = false;
+        }
+    }
+
+    // // Counting the valid vertices
+    // for (ui i = 0; i < data_vertices_count; ++i){
+    //     for (ui j = 0; j < max_depth; ++j){
+    //         if (valid_vertices[j][i]){
+    //             ++temp_valid_vtx_cnt;
+    //         }
+    //     }
+    // }
+    // valid_vtx_cnt = temp_valid_vtx_cnt;
+
+    // Release the buffer.
+
+    EXIT:
+    releaseBuffer(max_depth, idx, idx_count, embedding, idx_embedding, temp_buffer, valid_candidate_idx,
+                  visited_vertices,
+                  bn, bn_count);
+
+    // // release the counting buffer
+    // for (ui i = 0; i < max_depth; ++i) {;
+    //     delete[] valid_vertices[i];
+    // }
+    // delete[] valid_vertices;
+
+    return overtime;
+}
+
+void EvaluateQuery::generateValidCandidateIndex(ui depth, ui *idx_embedding, ui *idx_count, ui **valid_candidate_index,
+                                                Edges ***edge_matrix, ui **bn, ui *bn_cnt, ui *order,
+                                                ui *&temp_buffer) {
+    VertexID u = order[depth];
+    VertexID previous_bn = bn[depth][0];
+    ui previous_index_id = idx_embedding[previous_bn];
+    ui valid_candidates_count = 0;
+    Edges& previous_edge = *edge_matrix[previous_bn][u];
+
+    valid_candidates_count = previous_edge.offset_[previous_index_id + 1] - previous_edge.offset_[previous_index_id];
+    ui* previous_candidates = previous_edge.edge_ + previous_edge.offset_[previous_index_id];
+
+    memcpy(valid_candidate_index[depth], previous_candidates, valid_candidates_count * sizeof(ui));
+
+    ui temp_count;
+    for (ui i = 1; i < bn_cnt[depth]; ++i) {
+        VertexID current_bn = bn[depth][i];
+        Edges& current_edge = *edge_matrix[current_bn][u];
+        ui current_index_id = idx_embedding[current_bn];
+
+        ui current_candidates_count = current_edge.offset_[current_index_id + 1] - current_edge.offset_[current_index_id];
+        ui* current_candidates = current_edge.edge_ + current_edge.offset_[current_index_id];
+
+        ComputeSetIntersection::ComputeCandidates(current_candidates, current_candidates_count, valid_candidate_index[depth], valid_candidates_count,
+                        temp_buffer, temp_count);
+
+        std::swap(temp_buffer, valid_candidate_index[depth]);
+        valid_candidates_count = temp_count;
+    }
+
+    idx_count[depth] = valid_candidates_count;
+}
+
+bool
+EvaluateQuery::GQLEngine(const Graph *data_graph, const Graph *query_graph, ui **candidates,ui *candidates_count,
+                                   ui *order, uint64_t output_limit_num, uint64_t &call_cnt, 
+                                   mpz_t embedding_cnt, int64_t& time_limit) {
+    bool overtime = false;
+    int cur_depth = 0;
+    ui max_depth = query_graph->getVerticesCount();
+    VertexID start_vertex = order[0];
+
+    // Generate the bn.
+    ui **bn;
+    ui *bn_count;
+
+    bn = new ui *[max_depth];
+    for (ui i = 0; i < max_depth; ++i) {
+        bn[i] = new ui[max_depth];
+    }
+
+    bn_count = new ui[max_depth];
+    std::fill(bn_count, bn_count + max_depth, 0);
+
+    std::vector<bool> visited_query_vertices(max_depth, false);
+    visited_query_vertices[start_vertex] = true;
+    for (ui i = 1; i < max_depth; ++i) {
+        VertexID cur_vertex = order[i];
+        ui nbr_cnt;
+        const VertexID *nbrs = query_graph->getVertexNeighbors(cur_vertex, nbr_cnt);
+
+        for (ui j = 0; j < nbr_cnt; ++j) {
+            VertexID nbr = nbrs[j];
+
+            if (visited_query_vertices[nbr]) {
+                bn[i][bn_count[i]++] = nbr;
+            }
+        }
+
+        visited_query_vertices[cur_vertex] = true;
+    }
+
+    // Allocate the memory buffer.
+    ui *idx;
+    ui *idx_count;
+    ui *embedding;
+    VertexID **valid_candidate;
+    bool *visited_vertices;
+
+    idx = new ui[max_depth];
+    idx_count = new ui[max_depth];
+    embedding = new ui[max_depth];
+    visited_vertices = new bool[data_graph->getVerticesCount()];
+    std::fill(visited_vertices, visited_vertices + data_graph->getVerticesCount(), false);
+    valid_candidate = new ui *[max_depth];
+
+    for (ui i = 0; i < max_depth; ++i) {
+        VertexID cur_vertex = order[i];
+        ui max_candidate_count = candidates_count[cur_vertex];
+        valid_candidate[i] = new VertexID[max_candidate_count];
+    }
+
+    idx[cur_depth] = 0;
+    idx_count[cur_depth] = candidates_count[start_vertex];
+    std::copy(candidates[start_vertex], candidates[start_vertex] + candidates_count[start_vertex],
+              valid_candidate[cur_depth]);
+
+    while (true) {
+        while (idx[cur_depth] < idx_count[cur_depth]) {
+            VertexID u = order[cur_depth];
+            VertexID v = valid_candidate[cur_depth][idx[cur_depth]];
+            embedding[u] = v;
+            visited_vertices[v] = true;
+            idx[cur_depth] += 1;
+
+            if (TimeOp::getClockNan() >= time_limit) {
+                overtime = true;
+                goto EXIT;
+            }
+            if ((ui)cur_depth == max_depth - 1) {
+                mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                visited_vertices[v] = false;
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
+            } else {
+                call_cnt += 1;
+                cur_depth += 1;
+                idx[cur_depth] = 0;
+                generateValidCandidates(data_graph, cur_depth, embedding, idx_count, valid_candidate,
+                                        visited_vertices, bn, bn_count, order, candidates, candidates_count,
+                                        query_graph);
+            }
+        }
+
+        cur_depth -= 1;
+        if (cur_depth < 0)
+            break;
+        else
+            visited_vertices[embedding[order[cur_depth]]] = false;
+    }
+
+    // Release the buffer.
+    EXIT:
+    delete[] bn_count;
+    delete[] idx;
+    delete[] idx_count;
+    delete[] embedding;
+    delete[] visited_vertices;
+    for (ui i = 0; i < max_depth; ++i) {
+        delete[] bn[i];
+        delete[] valid_candidate[i];
+    }
+
+    delete[] bn;
+    delete[] valid_candidate;
+
+    return overtime;
+}
+
+// 与CFL不同的是：这里没有pivot信息的使用，目前我(yujie)对pivot的理解是，VF3的parent信息
+void EvaluateQuery::generateValidCandidates(const Graph *data_graph, ui depth, ui *embedding, ui *idx_count,
+                                            ui **valid_candidate, bool *visited_vertices, ui **bn, ui *bn_cnt,
+                                            ui *order, ui **candidates, ui *candidates_count,
+                                            const Graph *query_graph) {
+    VertexID u = order[depth];
+
+    idx_count[depth] = 0;
+
+    for (ui i = 0; i < candidates_count[u]; ++i) {
+        VertexID v = candidates[u][i];
+
+        if (!visited_vertices[v]) {
+            bool valid = true;
+
+            for (ui j = 0; j < bn_cnt[depth]; ++j) {
+                VertexID u_bn = bn[depth][j];
+                VertexID u_bn_v = embedding[u_bn];
+#ifdef ELABELED_GRAPH
+                LabelID elabel = query_graph->getEdgeLabel(u, u_bn, true);
+                if (!data_graph->checkEdgeExistence(v, u_bn_v, elabel)) {
+#else
+                if (!data_graph->checkEdgeExistence(v, u_bn_v)) {
+#endif
+                    valid = false;
+                    break;
+                }
+            }
+
+            if (valid) {
+                valid_candidate[depth][idx_count[depth]++] = v;
+            }
+        }
+    }
+}
+
+bool
+EvaluateQuery::QSIEngine(const Graph *data_graph, const Graph *query_graph, ui **candidates,ui *candidates_count,
+                                   ui *order, ui *pivot, uint64_t output_limit_num, uint64_t &call_cnt,
+                                   mpz_t embedding_cnt, int64_t& time_limit) {
+    bool overtime = false;
+    int cur_depth = 0;
+    ui max_depth = query_graph->getVerticesCount();
+    VertexID start_vertex = order[0];
+
+    // Generate the bn.
+    ui **bn;
+    ui *bn_count;
+    generateBN(query_graph, order, pivot, bn, bn_count);
+
+    // Allocate the memory buffer.
+    ui *idx;
+    ui *idx_count;
+    ui *embedding;
+    VertexID **valid_candidate;
+    bool *visited_vertices;
+
+    idx = new ui[max_depth];
+    idx_count = new ui[max_depth];
+    embedding = new ui[max_depth];
+    visited_vertices = new bool[data_graph->getVerticesCount()];
+    std::fill(visited_vertices, visited_vertices + data_graph->getVerticesCount(), false);
+    valid_candidate = new ui *[max_depth];
+
+    ui max_candidate_count = data_graph->getGraphMaxLabelFrequency();
+    for (ui i = 0; i < max_depth; ++i) {
+        valid_candidate[i] = new VertexID[max_candidate_count];
+    }
+
+    idx[cur_depth] = 0;
+    idx_count[cur_depth] = candidates_count[start_vertex];
+    std::copy(candidates[start_vertex], candidates[start_vertex] + candidates_count[start_vertex],
+              valid_candidate[cur_depth]);
+
+    while (true) {
+        while (idx[cur_depth] < idx_count[cur_depth]) {
+            VertexID u = order[cur_depth];
+            VertexID v = valid_candidate[cur_depth][idx[cur_depth]];
+            embedding[u] = v;
+            visited_vertices[v] = true;
+            idx[cur_depth] += 1;
+
+            if (TimeOp::getClockNan() >= time_limit) {
+                overtime = true;
+                goto EXIT;
+            }
+            if ((ui)cur_depth == max_depth - 1) {
+                mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                visited_vertices[v] = false;
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
+            } else {
+                call_cnt += 1;
+                cur_depth += 1;
+                idx[cur_depth] = 0;
+                generateValidCandidates(query_graph, data_graph, cur_depth, embedding, idx_count, valid_candidate,
+                                        visited_vertices, bn, bn_count, order, pivot);
+            }
+        }
+
+        cur_depth -= 1;
+        if (cur_depth < 0)
+            break;
+        else
+            visited_vertices[embedding[order[cur_depth]]] = false;
+    }
+
+    // Release the buffer.
+    EXIT:
+    delete[] bn_count;
+    delete[] idx;
+    delete[] idx_count;
+    delete[] embedding;
+    delete[] visited_vertices;
+    for (ui i = 0; i < max_depth; ++i) {
+        delete[] bn[i];
+        delete[] valid_candidate[i];
+    }
+
+    delete[] bn;
+    delete[] valid_candidate;
+
+    return overtime;
+}
+
+// 增加一个同label邻居数量的检查
+void EvaluateQuery::generateValidCandidates(const Graph *query_graph, const Graph *data_graph, ui depth, ui *embedding,
+                                            ui *idx_count, ui **valid_candidate, bool *visited_vertices, ui **bn,
+                                            ui *bn_cnt,
+                                            ui *order, ui *pivot) {
+    VertexID u = order[depth];
+    LabelID u_label = query_graph->getVertexLabel(u);
+    ui u_degree = query_graph->getVertexDegree(u);
+
+    idx_count[depth] = 0;
+
+    VertexID p = embedding[pivot[depth]];
+    ui nbr_cnt;
+    auto nbrs = data_graph->getVertexNeighbors(p, nbr_cnt);
+#ifdef ELABELED_GRAPH
+    auto uqlabel = query_graph->getEdgeLabel(u, pivot[depth], true);
+#endif
+
+    for (ui i = 0; i < nbr_cnt; ++i) {
+        VertexID v = nbrs[i];
+#ifdef ELABELED_GRAPH
+        if (data_graph->getEdgeLabel(p, nbrs[i], true) != uqlabel) continue;
+#endif
+        if (!visited_vertices[v] && u_label == data_graph->getVertexLabel(v) &&
+            u_degree <= data_graph->getVertexDegree(v)) {
+            bool valid = true;
+
+            for (ui j = 0; j < bn_cnt[depth]; ++j) {
+                VertexID u_bn = bn[depth][j];
+                VertexID u_bn_v = embedding[u_bn];
+#ifdef ELABELED_GRAPH
+                LabelID elabel = query_graph->getEdgeLabel(u, u_bn, true);
+                if (!data_graph->checkEdgeExistence(v, u_bn_v, elabel)) {
+#else
+                if (!data_graph->checkEdgeExistence(v, u_bn_v)) {
+#endif
+                    valid = false;
+                    break;
+                }
+            }
+
+            if (valid) {
+                valid_candidate[depth][idx_count[depth]++] = v;
+            }
+        }
+    }
+}
+
+bool
+EvaluateQuery::DPisoEngine(const Graph *data_graph, const Graph *query_graph, TreeNode *tree,
+                                        Edges ***edge_matrix, ui **candidates, ui *candidates_count,
+                                        ui **weight_array, ui *order, uint64_t output_limit_num,
+                                        uint64_t &call_cnt, mpz_t embedding_cnt, int64_t& time_limit) {
+    ui max_depth = query_graph->getVerticesCount();
+
+    ui *extendable = new ui[max_depth];
+    for (ui i = 0; i < max_depth; ++i) {
+        extendable[i] = tree[i].bn_count_;
+    }
+
+    // Generate backward neighbors.
+    ui **bn;
+    ui *bn_count;
+    generateBN(query_graph, order, bn, bn_count);
+
+    // Allocate the memory buffer.
+    ui *idx;
+    ui *idx_count;
+    ui *embedding;
+    ui *idx_embedding;
+    ui *temp_buffer;
+    ui **valid_candidate_idx;
+    bool *visited_vertices;
+    allocateBuffer(data_graph, query_graph, candidates_count, idx, idx_count, embedding, idx_embedding,
+                   temp_buffer, valid_candidate_idx, visited_vertices);
+
+    // Evaluate the query.
+    bool overtime = false;
+    int cur_depth = 0;
+
+#ifdef ENABLE_FAILING_SET
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> ancestors;
+    computeAncestor(query_graph, tree, order, ancestors);
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> vec_failing_set(max_depth);
+    std::unordered_map<VertexID, VertexID> reverse_embedding;  // v->u used for conflict
+    reverse_embedding.reserve(MAXIMUM_QUERY_GRAPH_SIZE * 2);
+#endif
+
+    VertexID start_vertex = order[0];
+    std::vector<dpiso_min_pq> vec_rank_queue;
+
+    for (ui i = 0; i < candidates_count[start_vertex]; ++i) {
+        VertexID v = candidates[start_vertex][i];
+        embedding[start_vertex] = v;
+        idx_embedding[start_vertex] = i;
+        visited_vertices[v] = true;
+
+#ifdef ENABLE_FAILING_SET
+        reverse_embedding[v] = start_vertex;
+#endif
+        vec_rank_queue.emplace_back(dpiso_min_pq(extendable_vertex_compare));
+        updateExtendableVertex(idx_embedding, idx_count, valid_candidate_idx, edge_matrix, temp_buffer, weight_array,
+                               tree, start_vertex, extendable,
+                               vec_rank_queue, query_graph);
+
+        VertexID u = vec_rank_queue.back().top().first.first;
+        vec_rank_queue.back().pop();
+
+#ifdef ENABLE_FAILING_SET
+        if (idx_count[u] == 0) {
+            vec_failing_set[cur_depth] = ancestors[u];
+        } else {
+            vec_failing_set[cur_depth].reset();
+        }
+#endif
+
+        call_cnt += 1;
+        cur_depth += 1;
+        order[cur_depth] = u;
+        idx[u] = 0;
+        while (cur_depth > 0) { // 回溯到第一层的时候结束
+            while (idx[u] < idx_count[u]) { // 当前节点的candidate结束的时候，回溯
+                ui valid_idx = valid_candidate_idx[u][idx[u]];
+                v = candidates[u][valid_idx];
+
+                if (visited_vertices[v]) {
+                    idx[u] += 1;
+#ifdef ENABLE_FAILING_SET // case 1:发生了冲突，FM = anc(u) ∪ anc(u′)
+                    vec_failing_set[cur_depth] = ancestors[u];
+                    vec_failing_set[cur_depth] |= ancestors[reverse_embedding[v]];
+                    // 上一层的点的failing set 与其子节点的failing set 取并集
+                    vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+#endif
+                    continue;
+                }
+                embedding[u] = v;
+                idx_embedding[u] = valid_idx;
+                visited_vertices[v] = true;
+                idx[u] += 1;
+
+#ifdef ENABLE_FAILING_SET
+                reverse_embedding[v] = u;
+#endif
+                if (TimeOp::getClockNan() >= time_limit) {
+                    overtime = true;
+                    goto EXIT;
+                }
+
+                if ((ui)cur_depth == max_depth - 1) {
+                    mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                    visited_vertices[v] = false;
+#ifdef ENABLE_FAILING_SET // case 3:匹配成功， 失败集置空（描述有问题，实际上应该是失败集中放入所有点）
+                    reverse_embedding.erase(embedding[u]);
+                    vec_failing_set[cur_depth].set();
+                    vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+
+#endif
+                    if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                        goto EXIT;
+                    }
+                } else { // 还有没有匹配的点，则向下走一层（匹配下一个点）
+                    call_cnt += 1;
+                    cur_depth += 1;
+                    vec_rank_queue.emplace_back(vec_rank_queue.back());
+                    updateExtendableVertex(idx_embedding, idx_count, valid_candidate_idx, edge_matrix, temp_buffer,
+                                           weight_array, tree, u, extendable,
+                                           vec_rank_queue, query_graph);
+
+                    u = vec_rank_queue.back().top().first.first;
+                    vec_rank_queue.back().pop();
+                    idx[u] = 0;
+                    order[cur_depth] = u;
+
+#ifdef ENABLE_FAILING_SET
+                    if (idx_count[u] == 0) { // 如果下一个点的候选集是空，那么直接判定失败
+                        // case 2:因为候选集为空而失败  FM = anc(u)
+                        vec_failing_set[cur_depth - 1] = ancestors[u];
+                    } else { // 如果不是空，失败集信息清空
+                        vec_failing_set[cur_depth - 1].reset();
+                    }
+#endif
+                }
+            }
+
+            // 回溯
+            cur_depth -= 1;
+            vec_rank_queue.pop_back();
+            u = order[cur_depth];
+            visited_vertices[embedding[u]] = false;
+            restoreExtendableVertex(tree, u, extendable);
+#ifdef ENABLE_FAILING_SET
+            reverse_embedding.erase(embedding[u]);
+            if (cur_depth != 0) {
+                if (!vec_failing_set[cur_depth].test(u)) {
+                    vec_failing_set[cur_depth - 1] = vec_failing_set[cur_depth];
+                    // 失败集那么多那么多的操作，实际剪枝就是这一行
+                    // 如果下一个点出现没有出现在失败集中，那么下一个点不是失败原因，直接跳过
+                    // 相对应这里的操作是，把candidate的索引指针 idx[u] ，指向末尾
+                    idx[u] = idx_count[u];
+                } else {
+                    vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+                }
+            }
+#endif
+        }
+    }
+
+    // Release the buffer.
+    EXIT:
+    releaseBuffer(max_depth, idx, idx_count, embedding, idx_embedding, temp_buffer, valid_candidate_idx,
+                  visited_vertices,
+                  bn, bn_count);
+
+    return overtime;
+}
+
+void EvaluateQuery::updateExtendableVertex(ui *idx_embedding, ui *idx_count, ui **valid_candidate_index,
+                                           Edges ***edge_matrix, ui *&temp_buffer, ui **weight_array,
+                                           TreeNode *tree, VertexID mapped_vertex, ui *extendable,
+                                           std::vector<dpiso_min_pq> &vec_rank_queue, const Graph *query_graph) {
+    TreeNode &node = tree[mapped_vertex];
+    for (ui i = 0; i < node.fn_count_; ++i) {
+        VertexID u = node.fn_[i];
+        extendable[u] -= 1;
+        if (extendable[u] == 0) {
+            generateValidCandidateIndex(u, idx_embedding, idx_count, valid_candidate_index[u], edge_matrix, tree[u].bn_,
+                                        tree[u].bn_count_, temp_buffer);
+
+            ui weight = 0;
+            for (ui j = 0; j < idx_count[u]; ++j) {
+                ui idx = valid_candidate_index[u][j];
+                weight += weight_array[u][idx];
+            }
+            vec_rank_queue.back().emplace(std::make_pair(std::make_pair(u, query_graph->getVertexDegree(u)), weight));
+        }
+    }
+}
+
+void EvaluateQuery::restoreExtendableVertex(TreeNode *tree, VertexID unmapped_vertex, ui *extendable) {
+    TreeNode &node = tree[unmapped_vertex];
+    for (ui i = 0; i < node.fn_count_; ++i) {
+        VertexID u = node.fn_[i];
+        extendable[u] += 1;
+    }
+}
+
+void
+EvaluateQuery::generateValidCandidateIndex(VertexID u, ui *idx_embedding, ui *idx_count, ui *&valid_candidate_index,
+                                           Edges ***edge_matrix, ui *bn, ui bn_cnt, ui *&temp_buffer) {
+    VertexID previous_bn = bn[0];
+    Edges &previous_edge = *edge_matrix[previous_bn][u];
+    ui previous_index_id = idx_embedding[previous_bn];
+
+    ui previous_candidates_count =
+            previous_edge.offset_[previous_index_id + 1] - previous_edge.offset_[previous_index_id];
+    ui *previous_candidates = previous_edge.edge_ + previous_edge.offset_[previous_index_id];
+
+    ui valid_candidates_count = 0;
+    for (ui i = 0; i < previous_candidates_count; ++i) {
+        valid_candidate_index[valid_candidates_count++] = previous_candidates[i];
+    }
+
+    ui temp_count;
+    for (ui i = 1; i < bn_cnt; ++i) {
+        VertexID current_bn = bn[i];
+        Edges &current_edge = *edge_matrix[current_bn][u];
+        ui current_index_id = idx_embedding[current_bn];
+
+        ui current_candidates_count =
+                current_edge.offset_[current_index_id + 1] - current_edge.offset_[current_index_id];
+        ui *current_candidates = current_edge.edge_ + current_edge.offset_[current_index_id];
+
+        ComputeSetIntersection::ComputeCandidates(current_candidates, current_candidates_count, valid_candidate_index,
+                                                  valid_candidates_count,
+                                                  temp_buffer, temp_count);
+
+        std::swap(temp_buffer, valid_candidate_index);
+        valid_candidates_count = temp_count;
+    }
+
+    idx_count[u] = valid_candidates_count;
+}
+
+void EvaluateQuery::computeAncestor(const Graph *query_graph, TreeNode *tree, VertexID *order,
+                                    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> &ancestors) {
+    ui q_num = query_graph->getVerticesCount();
+    ancestors.resize(q_num);
+
+    // Compute the ancestor in the top-down order.
+    for (ui i = 0; i < q_num; ++i) {
+        VertexID u = order[i];
+        TreeNode &u_node = tree[u];
+        ancestors[u].set(u);
+        for (ui j = 0; j < u_node.bn_count_; ++j) {
+            VertexID u_bn = u_node.bn_[j];
+            ancestors[u] |= ancestors[u_bn];
+        }
+    }
+}
+
+bool
+EvaluateQuery::CECIEngine(const Graph *data_graph, const Graph *query_graph, TreeNode *tree, ui **candidates,
+                                ui *candidates_count,
+                                std::vector<std::unordered_map<VertexID, std::vector<VertexID>>> &TE_Candidates,
+                                std::vector<std::vector<std::unordered_map<VertexID, std::vector<VertexID>>>> &NTE_Candidates,
+                                ui *order, uint64_t &output_limit_num, uint64_t &call_cnt,
+                                mpz_t embedding_cnt, int64_t& time_limit) {
+
+    ui max_depth = query_graph->getVerticesCount();
+    ui data_vertices_count = data_graph->getVerticesCount();
+    ui max_valid_candidates_count = 0;
+    for (ui i = 0; i < max_depth; ++i) {
+        if (candidates_count[i] > max_valid_candidates_count) {
+            max_valid_candidates_count = candidates_count[i];
+        }
+    }
+    // Allocate the memory buffer.
+    ui *idx = new ui[max_depth];
+    ui *idx_count = new ui[max_depth];
+    ui *embedding = new ui[max_depth];
+    ui *temp_buffer = new ui[max_valid_candidates_count];
+    ui **valid_candidates = new ui *[max_depth];
+    for (ui i = 0; i < max_depth; ++i) {
+        valid_candidates[i] = new ui[max_valid_candidates_count];
+    }
+    bool *visited_vertices = new bool[data_vertices_count];
+    std::fill(visited_vertices, visited_vertices + data_vertices_count, false);
+
+    // Evaluate the query.
+    bool overtime = false;
+    int cur_depth = 0;
+    VertexID start_vertex = order[0];
+
+    idx[cur_depth] = 0;
+    idx_count[cur_depth] = candidates_count[start_vertex];
+
+    for (ui i = 0; i < idx_count[cur_depth]; ++i) {
+        valid_candidates[cur_depth][i] = candidates[start_vertex][i];
+    }
+
+#ifdef ENABLE_FAILING_SET
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> ancestors;
+    computeAncestor(query_graph, order, ancestors);
+    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> vec_failing_set(max_depth);
+    std::unordered_map<VertexID, VertexID> reverse_embedding;
+    reverse_embedding.reserve(MAXIMUM_QUERY_GRAPH_SIZE * 2);
+#endif
+
+    while (true) {
+        while (idx[cur_depth] < idx_count[cur_depth]) {
+            VertexID u = order[cur_depth];
+            VertexID v = valid_candidates[cur_depth][idx[cur_depth]];
+            idx[cur_depth] += 1;
+
+            if (visited_vertices[v]) {
+#ifdef ENABLE_FAILING_SET
+                vec_failing_set[cur_depth] = ancestors[u];
+                vec_failing_set[cur_depth] |= ancestors[reverse_embedding[v]];
+                vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+#endif
+                continue;
+            }
+
+            embedding[u] = v;
+            visited_vertices[v] = true;
+
+#ifdef ENABLE_FAILING_SET
+            reverse_embedding[v] = u;
+#endif
+            if (TimeOp::getClockNan() >= time_limit) {
+                overtime = true;
+                goto EXIT;
+            }
+            if ((ui)cur_depth == max_depth - 1) {
+                mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                visited_vertices[v] = false;
+#ifdef ENABLE_FAILING_SET
+                reverse_embedding.erase(embedding[u]);
+                vec_failing_set[cur_depth].set();
+                vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+#endif
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
+            } else {
+                call_cnt += 1;
+                cur_depth += 1;
+                idx[cur_depth] = 0;
+                generateValidCandidates(cur_depth, embedding, idx_count, valid_candidates, order, temp_buffer, tree,
+                                        TE_Candidates,
+                                        NTE_Candidates);
+#ifdef ENABLE_FAILING_SET
+                if (idx_count[cur_depth] == 0) {
+                    vec_failing_set[cur_depth - 1] = ancestors[order[cur_depth]];
+                } else {
+                    vec_failing_set[cur_depth - 1].reset();
+                }
+#endif
+            }
+        }
+
+        cur_depth -= 1;
+        if (cur_depth < 0)
+            break;
+        else {
+            VertexID u = order[cur_depth];
+#ifdef ENABLE_FAILING_SET
+            reverse_embedding.erase(embedding[u]);
+            if (cur_depth != 0) {
+                if (!vec_failing_set[cur_depth].test(u)) {
+                    vec_failing_set[cur_depth - 1] = vec_failing_set[cur_depth];
+                    idx[cur_depth] = idx_count[cur_depth];
+                } else {
+                    vec_failing_set[cur_depth - 1] |= vec_failing_set[cur_depth];
+                }
+            }
+#endif
+            visited_vertices[embedding[u]] = false;
+        }
+    }
+
+    // Release the buffer.
+    EXIT:
+    delete[] idx;
+    delete[] idx_count;
+    delete[] embedding;
+    delete[] temp_buffer;
+    delete[] visited_vertices;
+    for (ui i = 0; i < max_depth; ++i) {
+        delete[] valid_candidates[i];
+    }
+    delete[] valid_candidates;
+
+    return overtime;
+}
+
+void EvaluateQuery::generateValidCandidates(ui depth, ui *embedding, ui *idx_count, ui **valid_candidates, ui *order,
+                                            ui *&temp_buffer, TreeNode *tree,
+                                            std::vector<std::unordered_map<VertexID, std::vector<VertexID>>> &TE_Candidates,
+                                            std::vector<std::vector<std::unordered_map<VertexID, std::vector<VertexID>>>> &NTE_Candidates) {
+
+    VertexID u = order[depth];
+    idx_count[depth] = 0;
+    ui valid_candidates_count = 0;
+    {
+        VertexID u_p = tree[u].parent_;
+        VertexID v_p = embedding[u_p];
+
+        auto iter = TE_Candidates[u].find(v_p);
+        if (iter == TE_Candidates[u].end() || iter->second.empty()) {
+            return;
+        }
+
+        valid_candidates_count = iter->second.size();
+        VertexID *v_p_nbrs = iter->second.data();
+
+        for (ui i = 0; i < valid_candidates_count; ++i) {
+            valid_candidates[depth][i] = v_p_nbrs[i];
+        }
+    }
+    ui temp_count;
+    for (ui i = 0; i < tree[u].bn_count_; ++i) {
+        VertexID u_p = tree[u].bn_[i];
+        VertexID v_p = embedding[u_p];
+
+        auto iter = NTE_Candidates[u][u_p].find(v_p);
+        if (iter == NTE_Candidates[u][u_p].end() || iter->second.empty()) {
+            return;
+        }
+
+        ui current_candidates_count = iter->second.size();
+        ui *current_candidates = iter->second.data();
+
+        ComputeSetIntersection::ComputeCandidates(current_candidates, current_candidates_count,
+                                                  valid_candidates[depth], valid_candidates_count,
+                                                  temp_buffer, temp_count);
+
+        std::swap(temp_buffer, valid_candidates[depth]);
+        valid_candidates_count = temp_count;
+    }
+
+    idx_count[depth] = valid_candidates_count;
+}
+
+void EvaluateQuery::computeAncestor(const Graph *query_graph, ui **bn, ui *bn_cnt, VertexID *order,
+                                    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> &ancestors) {
+    ui q_num = query_graph->getVerticesCount();
+    ancestors.resize(q_num);
+
+    // Compute the ancestor in the top-down order.
+    for (ui i = 0; i < q_num; ++i) {
+        VertexID u = order[i];
+        ancestors[u].set(u);
+        for (ui j = 0; j < bn_cnt[i]; ++j) {
+            VertexID u_bn = bn[i][j];
+            ancestors[u] |= ancestors[u_bn];
+        }
+    }
+}
+
+void EvaluateQuery::computeAncestor(const Graph *query_graph, VertexID *order,
+                                    std::vector<std::bitset<MAXIMUM_QUERY_GRAPH_SIZE>> &ancestors) {
+    ui q_num = query_graph->getVerticesCount();
+    ancestors.resize(q_num);
+
+    // Compute the ancestor in the top-down order.
+    for (ui i = 0; i < q_num; ++i) {
+        VertexID u = order[i];
+        ancestors[u].set(u);
+        for (ui j = 0; j < i; ++j) {
+            VertexID u_bn = order[j];
+            if (query_graph->checkEdgeExistence(u, u_bn)) {
+                ancestors[u] |= ancestors[u_bn];
+            }
+        }
+    }
+}
+
+bool
+EvaluateQuery::VF3Engine(const Graph *data_graph, const Graph *query_graph, ui *order,
+                               ui *pivot, uint64_t output_limit_num, uint64_t &call_cnt,
+                               mpz_t embedding_cnt, int64_t& time_limit) {
+    ui q_num = query_graph->getVerticesCount();
+    ui query_labels_num = query_graph->getLabelsCount();
+    ui query_max_label_fre = query_graph->getGraphMaxLabelFrequency();
+    ui d_num = data_graph->getVerticesCount();
+    ui data_labels_num = data_graph->getLabelsCount();
+    ui data_max_label_fre = data_graph->getGraphMaxLabelFrequency();
+
+    // 计算Feasibility sets: L, V
+    // query_feaibility
+    ui ***query_feasibility = NULL;
+    ui **query_feasibility_count = NULL;
+    query_feasibility = new ui**[q_num + 1]; // 这里取+1，参考原文
+    query_feasibility_count = new ui*[q_num + 1];
+    for (ui i = 0; i <= q_num; i++){
+        query_feasibility[i] = new ui*[query_labels_num];
+        query_feasibility_count[i] = new ui[query_labels_num];
+        memset(query_feasibility_count[i], 0, query_labels_num*sizeof(ui));
+        for (ui j = 0; j < query_labels_num; j++){
+            query_feasibility[i][j] = new ui[query_max_label_fre];
+        }
+    }
+    // 计算query_feasibility
+    generateFeasibility(query_graph, order, query_feasibility, query_feasibility_count);
+
+    // data_feasibility
+    ui ***data_feasibility = NULL;
+    ui **data_feasibility_count = NULL;
+    data_feasibility = new ui**[q_num + 1];
+    data_feasibility_count = new ui*[q_num + 1];
+    for (ui i = 0; i <= q_num; i++){
+        data_feasibility[i] = new ui*[data_labels_num];
+        data_feasibility_count[i] = new ui[data_labels_num];
+        memset(data_feasibility_count[i], 0, data_labels_num*sizeof(ui));
+        for (ui j = 0; j < data_labels_num; j++){
+            data_feasibility[i][j] = new ui[data_max_label_fre];
+        }
+    }
+
+    // 匹配
+    ui max_depth = query_graph->getVerticesCount();
+    ui *idx = new ui[max_depth];
+    ui *idx_count = new ui[max_depth];
+    ui *embedding = new ui[max_depth];
+    ui depth = 0;
+    ui **valid_candidates = new ui *[max_depth];
+    for (ui i = 0; i < max_depth; ++i) {
+        valid_candidates[i] = new ui[data_max_label_fre];
+    }
+    bool *visited_vertices = new bool[d_num];
+    memset(visited_vertices, 0, d_num*sizeof(bool));
+    bool overtime = exploreVF3Backtrack(data_graph, query_graph, order, pivot, output_limit_num, call_cnt, embedding_cnt,
+                        depth, max_depth, idx, idx_count, embedding, valid_candidates, visited_vertices,
+                        query_feasibility, query_feasibility_count, data_feasibility, data_feasibility_count, time_limit);
+
+    for (ui i = 0; i <= q_num; i++){
+        for (ui j = 0; j < query_labels_num; j++){
+            delete[] query_feasibility[i][j];
+        }
+        delete[] query_feasibility[i];
+        delete[] query_feasibility_count[i];
+    }
+    delete[] query_feasibility;
+    delete[] query_feasibility_count;
+    for (ui i = 0; i <= q_num; i++){
+        for (ui j = 0; j < data_labels_num; j++){
+            delete[] data_feasibility[i][j];
+        }
+        delete[] data_feasibility[i];
+        delete[] data_feasibility_count[i];
+    }
+    delete[] data_feasibility;
+    delete[] data_feasibility_count;
+    delete[] idx;
+    delete[] idx_count;
+    delete[] embedding;
+    for (ui i = 0; i < max_depth; i++) {
+        delete[] valid_candidates[i];
+    }
+    delete[] valid_candidates;
+    delete[] visited_vertices;
+    return overtime;
+}
+
+// 给定一个点，一张图，一组已匹配点，计算该点的feasibility set
+void EvaluateQuery::generateFeasibility(const Graph *graph, ui v, bool* matched, ui level, ui*** feasibility, ui**feasibility_count) {
+    // 初始化当前点的 feasibility set 信息：把上一个点的信息复制下来（刨去当前点）
+    ui labels_num = graph->getLabelsCount();
+    for (ui j = 0; j < labels_num; j++) {
+        feasibility_count[level][j] = 0;
+        for (ui k = 0; k < feasibility_count[level - 1][j]; k++) {
+            if (feasibility[level - 1][j][k] != v) {
+                feasibility[level][j][feasibility_count[level][j]++] = feasibility[level - 1][j][k];
+            }
+        }
+    }
+    ui nbrs_cnt;
+    const ui *nbrs = graph->getVertexNeighbors(v, nbrs_cnt);
+    for (ui j = 0; j < nbrs_cnt; j++) {
+        if (!matched[nbrs[j]]) {
+            // TODO, 先简单去个重试试，比较高级的去重需要更换数据结构
+            ui label = graph->getVertexLabel(nbrs[j]);
+            bool f_add = true;
+            for (ui k  = 0; k < feasibility_count[level][label]; k++) {
+                if (nbrs[j] == feasibility[level][label][k]) {
+                    f_add = false;
+                    break;
+                }
+            }
+            if (f_add == true) {
+                ui count = feasibility_count[level][label]++;
+                feasibility[level][label][count] = nbrs[j];
+            }
+        }
+    }
+}
+
+// 计算query_graph每个点的feasibility set
+void EvaluateQuery::generateFeasibility(const Graph *query_graph, const ui *order, ui*** feasibility, ui**feasibility_count) {
+    ui vertices_num = query_graph->getVerticesCount();
+
+    bool* query_matched = new bool[vertices_num];
+    memset(query_matched, 0, vertices_num*sizeof(bool));
+    
+    // 计算feasiblity信息，这里只需要记录连接的点即可，无向图
+    // 最后一个点的信息不需要算，肯定是空的
+    for (ui i = 1; i < vertices_num; i++) {
+        ui u = order[i - 1];
+        query_matched[u] = true;
+        generateFeasibility(query_graph, u, query_matched, i, feasibility, feasibility_count);
+    }
+    delete[] query_matched;
+}
+
+bool EvaluateQuery::exploreVF3Backtrack(const Graph *data_graph, const Graph *query_graph,
+                            ui *order, ui *pivot, uint64_t output_limit_num, uint64_t &call_cnt,
+                            mpz_t embedding_cnt, ui depth, ui max_depth, ui*idx, ui*idx_count,
+                            ui *embedding, ui **valid_candidates, bool* visited_vertices,
+                            ui*** query_feasibility, ui**query_feasibility_count,
+                            ui*** data_feasibility, ui**data_feasibility_count, int64_t& time_limit) {
+    if (TimeOp::getClockNan() >= time_limit) {
+        return  true;
+    }
+    if (depth == max_depth){
+        // no checks so far
+        mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+        if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+            for (ui i = 0; i < depth; i++){
+                idx[i] = idx_count[i];
+            }
+        }
+        return false;
+    }
+    ui u = order[depth];
+    // 当前节点的 candidate set 的计算
+    const ui*candidates;
+    ui candidate_count;
+    idx[depth] = 0;
+    idx_count[depth] = 0;
+    if (pivot[depth] == (ui)-1) {
+        ui query_label = query_graph->getVertexLabel(u);
+        candidates = data_graph->getVerticesByLabel(query_label, candidate_count);
+        for (ui i = 0; i < candidate_count; i++) {
+            if (!visited_vertices[candidates[i]]) {
+                valid_candidates[depth][idx_count[depth]++] = candidates[i];
+            }
+        }
+    } else {
+        ui v = embedding[pivot[depth]];
+        candidates = data_graph->getVertexNeighbors(v, candidate_count);
+        ui query_label = query_graph->getVertexLabel(u);
+        for (ui i = 0; i < candidate_count; i++) {
+            ui data_label = data_graph->getVertexLabel(candidates[i]);
+            if (!visited_vertices[candidates[i]] && data_label == query_label) {
+                valid_candidates[depth][idx_count[depth]++] = candidates[i];
+            }
+        }
+    }
+    // 遍历当前节点的 valid_candidates
+    while (idx[depth] < idx_count[depth]) {
+        if (isFeasibility(data_graph, query_graph, depth, order[depth], valid_candidates[depth][idx[depth]],
+                            embedding, order, query_feasibility, query_feasibility_count,
+                            data_feasibility, data_feasibility_count) == true) {
+            embedding[order[depth]] = valid_candidates[depth][idx[depth]];
+            visited_vertices[embedding[order[depth]]] = true;
+            call_cnt++;
+            if (exploreVF3Backtrack(data_graph, query_graph, order, pivot, output_limit_num, call_cnt, embedding_cnt,
+                        depth + 1, max_depth, idx, idx_count, embedding, valid_candidates, visited_vertices,
+                        query_feasibility, query_feasibility_count, data_feasibility, data_feasibility_count, time_limit) == true) {
+                return true;
+            }
+            visited_vertices[embedding[order[depth]]] = false;
+        }
+        idx[depth]++;
+    }
+    return false;
+}
+
+bool EvaluateQuery::isFeasibility(const Graph *data_graph, const Graph *query_graph, ui depth, ui cur_u, ui cur_v,
+                    ui *embedding, ui* order, ui*** query_feasibility, ui**query_feasibility_count,
+                    ui*** data_feasibility, ui**data_feasibility_count) {
+    ui d_num = data_graph->getVerticesCount();
+    ui q_num = query_graph->getVerticesCount();
+    ui data_labels_num = data_graph->getLabelsCount();
+    ui query_labels_num = query_graph->getLabelsCount();
+    ui labels_num = query_labels_num;
+    bool result = true;
+    // 计算已匹配点 matched
+    bool *data_matched = new bool[d_num];
+    bool *query_matched = new bool[q_num];
+    memset(data_matched, false, d_num*sizeof(bool));
+    memset(query_matched, false, q_num*sizeof(bool));
+    for (ui i = 0; i < depth; i++) {
+        data_matched[embedding[order[i]]] = true;
+        query_matched[order[i]] = true;
+    }
+    // 求数据图的feasibility set
+    generateFeasibility(data_graph, cur_v, data_matched, depth + 1, data_feasibility, data_feasibility_count);
+
+    // 计算feasibility set matched
+    bool *data_fmatched = new bool[d_num];
+    bool *query_fmatched = new bool[q_num];
+    memset(data_fmatched, false, d_num*sizeof(bool));
+    memset(query_fmatched, false, q_num*sizeof(bool));
+    for (ui i = 0; i < query_labels_num; i++) {
+        for (ui j = 0; j < query_feasibility_count[depth+1][i]; j++) {
+            query_fmatched[query_feasibility[depth+1][i][j]] = true;
+        }
+    }
+    for (ui i = 0; i < data_labels_num; i++) {
+        for (ui j = 0; j < data_feasibility_count[depth+1][i]; j++) {
+            data_fmatched[data_feasibility[depth+1][i][j]] = true;
+        }
+    }
+
+    // feasibility rules 信息处理（处理两点的neighbors）
+    ui unbrs_count = 0 ;
+    auto unbrs = query_graph->getVertexNeighbors(cur_u, unbrs_count);
+#ifdef ELABELED_GRAPH
+    auto elabels = query_graph->getVertexEdgeLabels(cur_u, unbrs_count);
+#endif
+    ui vnbrs_count = 0;
+    const ui *vnbrs = data_graph->getVertexNeighbors(cur_v, vnbrs_count);
+    if (vnbrs_count < unbrs_count) {
+        result = false;
+    } else {
+        // 用于计算不同label邻居的数量(in feasibility)
+        ui *unbrs_flabeled_num = new ui[query_labels_num];
+        ui *vnbrs_flabeled_num = new ui[data_labels_num];
+        memset(unbrs_flabeled_num, 0, query_labels_num*sizeof(ui));
+        memset(vnbrs_flabeled_num, 0, data_labels_num*sizeof(ui));
+        // 用于计算不同label邻居的数量(not in feasibility & not matched)
+        ui *unbrs_labeled_num = new ui[query_labels_num];
+        ui *vnbrs_labeled_num = new ui[data_labels_num];
+        memset(unbrs_labeled_num, 0, query_labels_num*sizeof(ui));
+        memset(vnbrs_labeled_num, 0, data_labels_num*sizeof(ui));
+
+        for (ui i = 0; i < unbrs_count; i++) {
+            ui unbr = unbrs[i];
+            ui unbr_label = query_graph->getVertexLabel(unbr);
+            
+            if (query_matched[unbr] == true) {
+#ifdef ELABELED_GRAPH
+                if (!data_graph->checkEdgeExistence(cur_v, embedding[unbr], elabels[i]))
+#else
+                if (!data_graph->checkEdgeExistence(cur_v, embedding[unbr]))
+#endif
+                    result = false;
+            } else if (query_fmatched[unbr] == true) {
+                unbrs_flabeled_num[unbr_label]++;
+            } else {
+                unbrs_labeled_num[unbr_label]++;
+            }
+        }
+
+        for (ui i = 0; i < vnbrs_count; i++) {
+            ui vnbr = vnbrs[i];
+            ui vnbr_label = data_graph->getVertexLabel(vnbr);
+            
+            if (data_matched[vnbr] == true) {
+                ; // do nothing;
+            } else if (data_fmatched[vnbr] == true) {
+                vnbrs_flabeled_num[vnbr_label]++;
+            } else {
+                vnbrs_labeled_num[vnbr_label]++;
+            }
+        }
+
+        for (ui i = 0; i < labels_num; i++) {
+            // for debug and believe the compiler
+            if (vnbrs_labeled_num[i] < unbrs_labeled_num[i]) {
+                result = false;
+                break;
+            }
+            if (vnbrs_flabeled_num[i] < unbrs_flabeled_num[i]){
+                result = false;
+                break;
+            }
+        }
+        delete[] unbrs_flabeled_num;
+        delete[] vnbrs_flabeled_num;
+        delete[] unbrs_labeled_num;
+        delete[] vnbrs_labeled_num;
+    }
+    delete[] data_matched;
+    delete[] query_matched;
+    delete[] data_fmatched;
+    delete[] query_fmatched;
+
+    return result;
+}
+
+bool
+EvaluateQuery::VEQEngine(const Graph *data_graph, const Graph *query_graph, TreeNode *tree,
+                                    Edges ***edge_matrix, ui **candidates, ui *candidates_count,
+                                    uint64_t output_limit_num, uint64_t &call_cnt,
+                                    mpz_t embedding_cnt, int64_t& time_limit) {
+    // 首先计算NEC，用于动态生成匹配顺序
+    ui q_num = query_graph->getVerticesCount();
+    ui d_num = data_graph->getVerticesCount();
+    ui** nec = new ui*[q_num];
+    memset(nec, 0, sizeof(ui*)*q_num);
+    computeNEC(query_graph, nec);
+
+    // 初始化辅助结构
+    ui depth = 0;
+    ui max_depth = query_graph->getVerticesCount();
+    ui *embedding = new ui[q_num]; // u->v
+    ui* order = new ui[max_depth];      // depth->u 当前一层的u是谁
+    bool overtime = false;               // 是否超时
+    ui *extendable = new ui[q_num]; // 计算query_graph上的可扩展点
+    for (ui i = 0; i < q_num; ++i) {
+        extendable[i] = tree[i].bn_count_;
+    }
+    ui *idx = new ui[max_depth];                   // depth->cans_idx
+    ui *idx_count = new ui[max_depth];             // depth->cans_count
+    ui** valid_cans = new ui*[q_num]; // u->valid_cans
+    for (ui i = 0; i < q_num; i++) {
+        valid_cans[i] = new ui[candidates_count[i]];
+    }
+    ui* valid_cans_count = new ui[q_num]; // u->valid_cans_count
+    bool* visited_u = new bool[q_num]; // vertexID->bool(某个点是否访问过)(query)
+    memset(visited_u, 0, q_num*sizeof(bool));
+    bool *visited_vertices = new bool[d_num]; // VertexID->bool(某个点是否访问过)(data)
+    memset(visited_vertices, 0, d_num*sizeof(bool));
+
+#ifdef ENABLE_EQUIVALENT_SET
+    ui** TM = new ui*[q_num];   // 用于计算每个节点valid_cans中每个节点对应的子树中生成的匹配数
+    for (ui i = 0; i < q_num; i++) {
+        TM[i] = new ui[candidates_count[i] + 1]; // 最后一个位置用来放当前层的总数，每个点valid_cans最多有can_cnt个
+    }
+    memset(TM[0], 0, sizeof(ui)*(candidates_count[0] + 1));
+     // vec_index和vec_set用于计算共享邻居的点
+    std::vector<std::vector<ui>> vec_index(q_num);
+    for (ui i = 0; i < q_num; i++) {
+        vec_index[i].resize(candidates_count[i]);
+        std::fill(vec_index[i].begin(), vec_index[i].end(), (ui)-1);
+    }
+    std::vector<std::vector<ui>> vec_set;  //预先分配的空间绝对不够
+    // 这里vec_set是静态计算的，但是论文里写的是动态计算（之后再做考量吧）（TODO）
+    overtime = computeNEC(query_graph, edge_matrix, candidates_count, candidates, vec_index, vec_set, time_limit);
+    if (overtime) return overtime;
+    // pi_m_index和pi_m用于计算运行时的等价点
+    std::vector<std::vector<ui>> pi_m_index(q_num);
+    for (ui i = 0; i < q_num; i++) {
+        pi_m_index[i].resize(candidates_count[i], (ui)-1);
+    }
+    std::vector<std::vector<ui>> pi_m;  // π_m
+    ui* pi_m_count = new ui[max_depth]; //记录每一层的pi_m_index用到哪个数了
+    pi_m_count[0] = 0;
+    // dm_index和dm用于计算成功集信息
+    std::vector<std::vector<ui>> dm(q_num);  // δ_m
+    std::unordered_map<VertexID, VertexID> reverse_embedding;  // v->u used for conflict
+    reverse_embedding.reserve(q_num); // 与embedding一样，最多有query_v_n个点
+#endif
+
+    // 第一个匹配点
+    ui start_vertex = (ui)-1;
+    for (ui i = 0; i < q_num; i++) {
+        if (extendable[i] == 0) {
+            start_vertex = i;
+            break;
+        }
+    }
+    assert(start_vertex != (ui)-1);
+    order[depth] = start_vertex;
+    visited_u[start_vertex] = true;
+    // 计算第一个点的valid_cans和idx
+    idx[depth] = 0;
+    valid_cans_count[start_vertex] = candidates_count[start_vertex];
+    idx_count[depth] = valid_cans_count[start_vertex];
+    for (ui i = 0; i < candidates_count[start_vertex]; i++) {
+        valid_cans[start_vertex][i] = candidates[start_vertex][i];
+    }
+#ifdef ENABLE_EQUIVALENT_SET
+    std::fill(pi_m_index[start_vertex].begin(), pi_m_index[start_vertex].end(), (ui)-1);
+#endif
+    // 开始匹配
+    while (true) {
+        while (idx[depth] < idx_count[depth]) {
+            if (TimeOp::getClockNan() >= time_limit) {
+                overtime = true;
+                goto EXIT;
+            }
+            // compute next u
+            VertexID u = order[depth];
+            VertexID v = valid_cans[u][idx[depth]];
+
+            if (visited_vertices[v]) {
+#ifdef ENABLE_EQUIVALENT_SET // 发生冲突， 处理产生冲突的节点
+                TM[u][idx[depth]] = 0;
+                VertexID con_u = reverse_embedding[v];
+                ui con_v_index = 0, v_index = 0;
+                for (; con_v_index < valid_cans_count[con_u]; con_v_index++) {
+                    if (valid_cans[con_u][con_v_index] == v) break;
+                }
+                for (; v_index < candidates_count[u]; v_index++) {
+                    if (candidates[u][v_index] == v) break;
+                }
+                assert(con_v_index < valid_cans_count[con_u]);
+                assert(v_index < candidates_count[u]);
+                // 求交
+                auto& con_uv_idx = pi_m_index[con_u][con_v_index];
+                for (ui i = 0; i < pi_m[con_uv_idx].size(); i++) {
+                    bool f_in = false;
+                    for (ui j = 0; j < vec_set[vec_index[u][v_index]].size(); j++) {
+                        if (vec_set[vec_index[u][v_index]][j] == pi_m[con_uv_idx][i]) {
+                            f_in = true;
+                            break;
+                        }
+                    }
+                    if (f_in == false) {
+                        pi_m[con_uv_idx][i] = pi_m[con_uv_idx][pi_m[con_uv_idx].size() - 1];
+                        pi_m[con_uv_idx].pop_back();
+                        i--;
+                    }
+                }
+#endif
+                idx[depth]++;
+                continue;
+            }
+#ifdef ENABLE_EQUIVALENT_SET // 如果当前节点是等价节点，跳过
+            if (pi_m_index[u][idx[depth]] != (ui)-1) {
+                // 一个小操作，如果是成功集的扩展，那么把导致成功的点，放到pi_m的第一位，需要记录匹配数
+                VertexID equ_v = pi_m[pi_m_index[u][idx[depth]]][0];
+                ui equ_v_index = 0;
+                for (; equ_v_index < idx_count[depth]; equ_v_index++) {
+                    if (equ_v == valid_cans[u][equ_v_index]) break;
+                }
+                assert(equ_v_index < idx_count[depth]);
+                mpz_add_ui(embedding_cnt, embedding_cnt, TM[u][equ_v_index]);
+                TM[u][candidates_count[u]] += TM[u][equ_v_index];
+                idx[depth]++;
+                continue;
+            }
+            reverse_embedding[v] = u;
+#endif
+            embedding[u] = v;
+            visited_vertices[v] = true;
+            ui cur_idx = idx[depth]++;
+#ifdef ENABLE_EQUIVALENT_SET // 初始化 pi_m(u,v) 信息
+            pi_m_index[u][cur_idx] = pi_m_count[depth]++;
+            ui v_index = 0;
+            for (; v_index < candidates_count[u]; v_index++) {
+                if (candidates[u][v_index] == v) break;
+            }
+            auto& pi = vec_set[vec_index[u][v_index]];
+            pi_m.push_back(pi); // 𝜋−𝑀(𝑢, 𝑣) ← 𝜋 (𝑢, 𝑣);
+            assert(pi_m.size() == pi_m_count[depth]);
+            dm[u].clear();                                  // 𝛿𝑀 (𝑢, 𝑣) ← ∅;
+            for (ui i = 0; i < depth; i++) {                // for each ancestor
+                if (TimeOp::getClockNan() >= time_limit) {
+                    overtime = true;
+                    goto EXIT;
+                }
+                bool va_in_pi = false, sec_empty = true;
+                ui va_index = 0;
+                VertexID ua = order[i];
+                VertexID va = embedding[ua];
+                for (; va_index < candidates_count[ua]; va_index++) {
+                    if (candidates[ua][va_index] == va) break;
+                }
+                assert(va_index < candidates_count[ua]);
+                auto& pi_a = vec_set[vec_index[ua][va_index]];
+                for (ui j = 0; j < pi.size(); j++) { // 𝜋 (𝑢, 𝑣)
+                    if (pi[j] == embedding[order[i]]) { // 𝑣𝑎 ∉ 𝜋 (𝑢, 𝑣)
+                        va_in_pi = true;
+                        break;
+                    }
+                    for (ui k = 0; k < pi_a.size(); k++) { // 𝜋 (𝑢𝑎,𝑣𝑎)∩𝜋 (𝑢, 𝑣) ≠ ∅
+                        if (pi_a[k] == pi[j]) {
+                            sec_empty = false;
+                            break;
+                        }
+                    }
+                    if (sec_empty == false) break;
+                }
+                if (va_in_pi == false && sec_empty == false) { // 𝛿𝑀 (𝑢𝑎,𝑣𝑎) ← 𝛿𝑀 (𝑢𝑎, 𝑣𝑎) ∪ 𝜋 (𝑢, 𝑣);
+                    ui dm_size = dm[ua].size();
+                    for (ui j = 0; j < pi.size(); j++) {
+                        bool f_add = true;
+                        for (ui k = 0; k < dm_size; k++) {
+                            if (dm[ua][k] == pi[j]) {
+                                f_add = false;
+                                break;
+                            }
+                        }
+                        if (f_add == true) {
+                            dm[ua].push_back(pi[j]);
+                        }
+                    }
+                }
+            }
+#endif
+            if (depth == max_depth - 1) { // 匹配成功
+                mpz_add_ui(embedding_cnt, embedding_cnt, 1);
+                visited_vertices[v] = false;
+                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
+                    goto EXIT;
+                }
+#ifdef ENABLE_EQUIVALENT_SET // 在最后一个点上匹配成功，将成功结果扩散到整层
+                reverse_embedding.erase(v);
+                TM[u][cur_idx] = 1;
+                TM[u][candidates_count[u]]++;
+                auto& uv_idx = pi_m_index[u][cur_idx];
+                for (ui i = 0; i < pi_m[uv_idx].size(); i++) { // 𝜋𝑀 (𝑢, 𝑣) ← 𝜋−𝑀(𝑢, 𝑣) − 𝛿𝑀 (𝑢, 𝑣);
+                    bool f_del = false;
+                    for (ui j = 0; j < dm[u].size(); j++) {
+                        if (pi_m[uv_idx][i] == dm[u][j]) {
+                            f_del = true;
+                            break;
+                        }
+                    }
+                    if (f_del == true) {
+                        pi_m[uv_idx][i] = pi_m[uv_idx][pi_m[uv_idx].size() - 1];
+                        pi_m[uv_idx].pop_back();
+                        i--;
+                    }
+                }
+                for (ui i = 1; i < pi_m[uv_idx].size(); i++) { // foreach 𝑣′ ∈ 𝜋𝑀 (𝑢, 𝑣)
+                    ui v_equ_index = 0;
+                    for (; v_equ_index < valid_cans_count[u]; v_equ_index++) {
+                        if (valid_cans[u][v_equ_index] == pi_m[uv_idx][i])
+                            break;
+                    }
+                    assert(v_equ_index < valid_cans_count[u]);
+                    pi_m_index[u][v_equ_index] = uv_idx;
+                }
+                // 将计算出的pi中导致成功的点，放到第一位上
+                if (pi_m[uv_idx].size() > 1) {
+                    auto pi_v_idx = std::find(pi_m[uv_idx].begin(), pi_m[uv_idx].end(), v);
+                    assert(pi_v_idx != pi_m[uv_idx].end());
+                    ui tmp = *pi_v_idx;
+                    *pi_v_idx = pi_m[uv_idx][0];
+                    pi_m[uv_idx][0] = tmp;
+                }
+#endif
+            } else { // 匹配下一层
+                call_cnt += 1;
+                depth += 1;
+                order[depth] = generateNextU(data_graph, query_graph, candidates, candidates_count, valid_cans,
+                                             valid_cans_count, extendable, nec, depth, embedding,
+                                             edge_matrix, visited_vertices, visited_u, order, tree);
+                
+                if (order[depth] == (ui)-1) {
+                    break; // 对呀，这里用break就可以达到直接回溯的效果呢
+                } else {
+                    visited_u[order[depth]] = true;
+                    idx[depth] = 0;
+                    idx_count[depth] = valid_cans_count[order[depth]];
+                }
+#ifdef ENABLE_EQUIVALENT_SET // 初始化下一层节点的 等价集 信息
+                memset(TM[order[depth]], 0, sizeof(ui)*(candidates_count[order[depth]] + 1));
+                std::fill(pi_m_index[order[depth]].begin(), pi_m_index[order[depth]].end(), (ui)-1);
+                pi_m_count[depth] = pi_m_count[depth - 1];
+#endif
+            }
+        }
+        // 回溯部分
+        depth -= 1;
+        if (depth == (ui)-1)
+            break;
+        VertexID u = order[depth];
+        ui cur_idx = idx[depth] - 1;
+        visited_vertices[embedding[u]] = false;
+        restoreExtendableVertex(tree, u, extendable);
+        if (order[depth + 1] != (ui)-1) { // 如果当前这一层没有找到合适的匹配点，那么会直接回溯
+            VertexID last_u = order[depth + 1];
+            visited_u[last_u] = false;
+            if (nec[last_u] != NULL) (*(nec[last_u]))++;
+        }
+#ifdef ENABLE_EQUIVALENT_SET // 处理结束上一个节点，将结果扩散
+        if (order[depth + 1] != (ui)-1) {
+            TM[u][cur_idx] = TM[order[depth + 1]][candidates_count[order[depth + 1]]];
+        } else {
+            TM[u][cur_idx] = 0;
+        }
+        TM[u][candidates_count[u]] += TM[u][cur_idx];
+        auto& uv_idx = pi_m_index[u][cur_idx];
+        if (TM[u][cur_idx] != 0) {
+            for (ui i = 0; i < pi_m[uv_idx].size(); i++) {
+                bool f_del = false;
+                for (ui j = 0; j < dm[u].size(); j++) {
+                    if (pi_m[uv_idx][i] == dm[u][j]) {
+                        f_del = true;
+                        break;
+                    }
+                }
+                if (f_del == true) {
+                    pi_m[uv_idx][i] = pi_m[uv_idx][pi_m[uv_idx].size() - 1];
+                    pi_m[uv_idx].pop_back();
+                    i--;
+                }
+            }
+            // 将计算出的pi中导致成功的点，放到第一位上
+            if (pi_m[uv_idx].size() > 1) {
+                auto pi_v_idx = std::find(pi_m[uv_idx].begin(), pi_m[uv_idx].end(), embedding[u]);
+                assert(pi_v_idx != pi_m[uv_idx].end());
+                ui tmp = *pi_v_idx;
+                *pi_v_idx = pi_m[uv_idx][0];
+                pi_m[uv_idx][0] = tmp;
+            }
+        }
+        for (ui i = 1; i < pi_m[uv_idx].size(); i++) {
+            ui v_equ_index = 0;
+            for (; v_equ_index < valid_cans_count[u]; v_equ_index++) {
+                if (valid_cans[u][v_equ_index] == pi_m[uv_idx][i])
+                    break;
+            }
+            assert(v_equ_index < valid_cans_count[u]);
+            pi_m_index[u][v_equ_index] = uv_idx;
+        }
+        pi_m.resize(pi_m_count[depth]);
+#endif
+    }
+
+    EXIT:
+    // 清理空间(部分空间先留着不请了，想到办法了再说)
+    for (ui i = 0; i < q_num; i++) {
+        // if (nec[i] != NULL) delete nec[i];
+    }
+    delete []nec;
+    delete []embedding;
+    delete []visited_u;
+    delete []visited_vertices;
+    delete []order;
+    delete []extendable;
+    delete []idx;
+    delete []idx_count;
+    for (ui i = 0; i < q_num; i++) {
+        delete[] valid_cans[i];
+    }
+    delete []valid_cans;
+    delete []valid_cans_count;
+#ifdef ENABLE_EQUIVALENT_SET
+for (ui i = 0; i < q_num; i++) {
+        delete[] TM[i];
+    }
+    delete[] TM;
+    delete[] pi_m_count;
+#endif
+    return overtime;
+}
+
+void EvaluateQuery::RestoreValidCans(const Graph *query_graph, const Graph *data_graph, bool* visited_u,
+                                     VertexID last_u, VertexID last_v,
+                                     std::vector<std::unordered_map<VertexID, ui>>& valid_cans) {
+    ui last_unbrs_count;
+    const ui* last_unbrs = query_graph->getVertexNeighbors(last_u, last_unbrs_count);
+    ui last_vnbrs_count;
+    const ui* last_vnbrs = data_graph->getVertexNeighbors(last_v, last_vnbrs_count);
+    for (ui i = 0; i < last_unbrs_count; i++) {
+        ui last_unbr = last_unbrs[i];
+        if (visited_u[last_unbr] == true) continue;
+        for (ui j = 0; j < last_vnbrs_count; j++) {
+            auto vertex = valid_cans[last_unbr].find(last_vnbrs[j]);
+            if (vertex != valid_cans[last_unbr].end()) {
+                if (vertex->second == 1) {
+                    valid_cans[last_unbr].erase(vertex);
+                } else {
+                    vertex->second--;
+                }
+            }
+        }
+    }
+}
+
+ui EvaluateQuery::generateNextU(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
+                                ui**valid_cans, ui*valid_cans_count, ui* extendable,  ui** nec,
+                                ui depth, ui* embedding, Edges ***edge_matrix, bool *visited_vertices,
+                                bool *visited_u, ui *order, TreeNode* tree) {
+    // 首先更新所有被影响到的点extenable点的valid_cans信息，用于计算NextU
+    ui q_num = query_graph->getVerticesCount();
+    ui cur_vertex = -1;
+    TreeNode &node = tree[order[depth - 1]];
+    for (ui i = 0; i < node.fn_count_; ++i) {
+        VertexID u = node.fn_[i];
+        extendable[u] -= 1;
+        if (extendable[u] == 0) { // 当点前点的前向点(也就是指向其的点)结束后，这些点可以扩展
+            ComputeValidCans(data_graph, query_graph, candidates, candidates_count, valid_cans,
+                             valid_cans_count, embedding, u, visited_u);
+        }
+    }
+    // 现在为止，valid_cans_count表示的就是|Cm(u)|，而valid_cans存的就是Cm(u)
+    bool f_only_1 = true;
+    // 先找满足|NEC(u)| >= |Um(u)|的点，同时记录degree == 1的点的情况
+    for (ui i = 0; i < q_num; i++) {
+        if (visited_u[i] == true || extendable[i] != 0) continue;
+        ui u_count = 0;
+        for (ui j = 0; j < valid_cans_count[i]; j++) {
+            if (visited_vertices[valid_cans[i][j]] == false) u_count++;
+        }
+        if (nec[i] != NULL && *(nec[i]) >= u_count) {
+            if (*(nec[i]) > u_count) {
+                return (ui)-1;
+            } else {
+                (*(nec[i]))--;
+                return i;
+            }
+        }
+        if (nec[i] != NULL) {
+            if(cur_vertex == (ui)-1) cur_vertex = i;
+        } else if (f_only_1 == true) {
+            f_only_1 = false;
+        }
+    }
+
+    if (f_only_1 == false) { // 最后找|Um(u)|最小的degree != 1的点
+        cur_vertex = (ui)-1;
+        ui min_Um_u = (ui)-1;
+        for (ui i = 0; i < q_num; i++) {
+            if (visited_u[i] == true || nec[i] != 0 || extendable[i] != 0) continue;
+            if (valid_cans_count[i] != 0 && min_Um_u > valid_cans_count[i]) {
+                cur_vertex = i;
+                min_Um_u = valid_cans_count[i];
+            }
+        }
+    }
+
+    if (cur_vertex != (ui)-1 && nec[cur_vertex] != NULL) {
+        (*nec[cur_vertex])--;
+    }
+
+    return cur_vertex;
+}
+
+void EvaluateQuery::ComputeValidCans(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
+                      ui**valid_cans, ui*valid_cans_count, ui* embedding, VertexID u, bool* visited_u) {
+    ui unbrs_count;
+    auto unbrs = query_graph->getVertexNeighbors(u, unbrs_count);
+#ifdef ELABELED_GRAPH
+    auto elabels = query_graph->getVertexEdgeLabels(u, unbrs_count);
+#endif
+    valid_cans_count[u] = 0;
+    for (ui i = 0; i < candidates_count[u]; i++) {
+        VertexID v = candidates[u][i];
+        bool flag = true;
+        for (ui j = 0; j < unbrs_count; j++) {
+            if (visited_u[unbrs[j]] == true
+#ifdef ELABELED_GRAPH
+                && !data_graph->checkEdgeExistence(v, embedding[unbrs[j]], elabels[j])) {
+#else
+                && !data_graph->checkEdgeExistence(v, embedding[unbrs[j]])) {
+#endif
+                flag = false;
+                break;
+            }
+        }
+        if (flag == true) {
+            valid_cans[u][valid_cans_count[u]++] = v;
+        }
+    }
+}
+
+// 计算candidates上的等价邻居
+bool
+EvaluateQuery::computeNEC(const Graph *query_graph, Edges ***edge_matrix, ui *candidates_count,
+                               ui**candidates, std::vector<std::vector<ui>>& vec_index,
+                               std::vector<std::vector<ui>>& vec_set, int64_t& time_limit) {
+    std::vector<ui> tmp_vec;
+    ui vec_count = 0;
+    for (ui i = 0; i < vec_index.size(); i++) {
+        tmp_vec.reserve(candidates_count[i]);
+        ui unbrs_count;
+        const ui *unbrs = query_graph->getVertexNeighbors(i, unbrs_count);
+        for (ui j = 0; j < candidates_count[i]; j++) {
+            if (vec_index[i][j] != (ui)-1)
+                continue;
+            vec_index[i][j] = vec_count++;
+            tmp_vec.push_back(candidates[i][j]);
+            for (ui k = j + 1; k < candidates_count[i]; k++) {
+                if (TimeOp::getClockNan() >= time_limit) {
+                    return true;
+                }
+                if (vec_index[i][k] != (ui)-1)
+                    continue;
+                // 这里判断邻居是否相同，并存入tmp_vec中
+                bool equ = true;
+                for (ui u1 = 0; u1 < unbrs_count; u1++) {
+                    ui unbr = unbrs[u1];
+                    const Edges* edges = edge_matrix[i][unbr];
+                    if (edges->offset_[j+1]-edges->offset_[j] == 0) {
+                        // 如果当前点的邻居的边数为 0，那么直接跳过
+                        // 不应该放在任何一个等价集中
+                        goto SKIP;
+                    }
+                    if (edges->offset_[j+1]-edges->offset_[j] != edges->offset_[k+1] - edges->offset_[k]) {
+                        equ = false;
+                        break;
+                    }
+                    // 这里默认边的顺序是按照candidates的顺序来的吧
+                    // 减少一层for循环吧，实在是太深了
+                    for (ui u2 = 0; u2 < edges->offset_[j+1] - edges->offset_[j]; u2++) {
+                        if (edges->edge_[u2+edges->offset_[j]] != edges->edge_[u2+edges->offset_[k]]) {
+                            equ = false;
+                            break;
+                        }
+                    }
+                    if (equ == false) break;
+                }
+                if (equ == true) {
+                    tmp_vec.push_back(candidates[i][k]);
+                    vec_index[i][k] = vec_index[i][j];
+                }
+            }
+            SKIP:
+            // 处理当前一批的vec
+            vec_set.push_back(tmp_vec);
+            tmp_vec.clear();
+        }
+    }
+    return false;
+}
+
+// 用于计算query_graph上的度为 1 的等价点
+void EvaluateQuery::computeNEC(const Graph *query_graph, ui** nec) {
+    ui q_num = query_graph->getVerticesCount();
+    ui* nec_tmp = new ui[q_num];
+    ui flag = true; // 定义一个通用标识
+    for (ui i = 0; i < q_num; i++) {
+        if (query_graph->getVertexDegree(i) != 1 || nec[i] != NULL) {
+            continue;
+        }
+        ui unbrs_num;
+        auto unbrs = query_graph->getVertexNeighbors(i, unbrs_num);
+#ifdef ELABELED_GRAPH
+        auto u1elabels = query_graph->getVertexEdgeLabels(i, unbrs_num);
+#endif
+        ui u_label = query_graph->getVertexLabel(i);
+        ui* nec_count = new ui(0);
+        nec_tmp[(*nec_count)++] = i;
+        for (ui j = i + 1; j < q_num; j++) {
+            if (query_graph->getVertexDegree(i) != 1 || nec[i] != NULL) {
+                continue;
+            }
+            // 比较label和nbr信息
+            if (u_label != query_graph->getVertexLabel(j)) {
+                continue;
+            }
+            ui u2_nbrs_num;
+            auto u2_nbrs = query_graph->getVertexNeighbors(j, u2_nbrs_num);
+#ifdef ELABELED_GRAPH
+            auto u2elabels = query_graph->getVertexEdgeLabels(j, u2_nbrs_num);
+#endif
+            if (u2_nbrs_num != unbrs_num) {
+                continue;
+            }
+            ui k1 = 0;
+            for (k1 = 0; k1 < unbrs_num; k1++) {
+                flag = false;
+                for (ui k2 = 0; k2 < u2_nbrs_num; k2++) {
+                    if (unbrs[k1] == u2_nbrs[k2]) {
+#ifdef ELABELED_GRAPH
+                        if (u1elabels[k1] == u2elabels[k2])
+#endif
+                            flag = true;
+                        break;
+                    }
+                }
+                if (flag == false) break; // 任意一个邻居不同，提前退出
+            }
+            if (k1 != unbrs_num) continue;
+            nec_tmp[(*nec_count)++] = j;
+        }
+        // 记录找到的所有与i有关的nec
+        for (ui j = 0; j < *nec_count; j++) {
+            nec[nec_tmp[j]] = nec_count;
+        }
+    }
+    delete []nec_tmp;
 }
 
 bool
@@ -479,7 +2368,7 @@ void EvaluateQuery::convert_encoded_relation_to_sparse_bitmap(catalog *storage, 
     }
 }
 
-void EvaluateQuery::kssComValidCans(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
+void EvaluateQuery::ComputeValidCans(const Graph *data_graph, const Graph *query_graph, ui **candidates, ui *candidates_count,
                       ui**valid_cans, ui*valid_cans_count, ui* embedding, VertexID u, bool* visited_u, bool * visited_v) {
     ui unbrs_count;
     auto unbrs = query_graph->getVertexNeighbors(u, unbrs_count);
@@ -515,12 +2404,14 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
     ui cur_depth = 0;
     ui q_num = query_graph->getVerticesCount();
     ui d_num = data_graph->getVerticesCount();
+    // 根据节点的度信息将order中的点，分为 kernel 和 shell 部分
     ui kernel_num = 0, shell_num = 0;
     ui* kernel = new ui[q_num];
     ui* shell = new ui[q_num];
     // kernel(true) or shell(false)
     bool* kos = new bool[q_num];
     memset(kos, 0, sizeof(bool)*q_num);
+    // 划分shell & kernel: 沿着order做，每次判断下一个点是不是shell就好了
     ui * degree = new ui[q_num];
     for (ui i = 0; i < q_num; i++) {
         degree[i] = query_graph->getVertexDegree(i);
@@ -536,10 +2427,13 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
         ui nbr_num = 0;
         const ui* nbrs = query_graph->getVertexNeighbors(u, nbr_num);
         for (ui j = 0; j < nbr_num; j++) {
-            degree[nbrs[j]]--;
+            degree[nbrs[j]]--;  // degree[nbrs[i]]--; 原来这里写错了...
         }
     }
 
+    // 记录每一个shell相连的kernel点数量，每往下找一层，就检查一遍shell
+    // 如果某个点的shell为0，计算这个shell的cans，如果cans为空，就回溯
+    // 按照这样的算法，kernel计算完之后，shell也就算完了，直接算结果
     ui* shell2kernel = new ui[q_num];
     memset(shell2kernel, 0, sizeof(ui)*q_num);
     for (ui i = 0; i < shell_num; i++) {
@@ -577,7 +2471,7 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
         valid_cans[start_vertex][i] = candidates[start_vertex][i];
     }
 
-    std::vector<VertexID> update;
+    std::vector<VertexID> update; // (zhijie) 实际上, 对于固定的order, 不需要实时计算update
 
     while (true) {
         while (idx[cur_depth] < idx_count[cur_depth]) {
@@ -588,34 +2482,42 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
             visited_v[v] = true;
             idx[cur_depth] += 1;
 
+            // 已经被计算的shell的cans检查
+            // TODO: 要不要加?
+
             if (TimeOp::getClockNan() >= time_limit) {
                 overtime = true;
                 goto EXIT;
             }
 
+            // 更新并检查shell2kernel的信息
             updateShell2Kernel(query_graph, u, shell2kernel, kos, update);
 
             if (cur_depth == kernel_num - 1) {
                 for(ui i = 0; i < shell_num; i++) {
                     VertexID u_shell = shell[i];
-                    kssComValidCans(data_graph, query_graph, candidates, candidates_count, valid_cans,
+                    ComputeValidCans(data_graph, query_graph, candidates, candidates_count, valid_cans,
                                  valid_cans_cnt, embedding, u_shell, visited_u, visited_v);
                 }
-                if (kssGenResult(shell_num, shell, valid_cans, valid_cans_cnt, visited_v, embedding_cnt, time_limit) == true) {
+                // 根据计算出的shell的cans信息，更新embedding_cnt
+                if (computeKSSEmbeddingNaive(shell_num, shell, valid_cans, valid_cans_cnt, visited_v, embedding_cnt, time_limit) == true) {
                     overtime = true;
                     goto EXIT;
                 }
+                // embedding_cnt += computeKSSEmbeddingOpt1(shell_num, shell, valid_cans, valid_cans_cnt);
+                // embedding_cnt += computeKSSEmbeddingOpt2(shell_num, shell, valid_cans, valid_cans_cnt);
                 visited_v[v] = false;
                 if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
                     goto EXIT;
                 }
+                // 最后一个节点匹配结束，恢复shell2kernel信息
                 restoreShell2Kernel(query_graph, u, shell2kernel, kos);
             } else {
                 cur_depth += 1;
                 VertexID next_u = kernel[cur_depth];
                 idx[cur_depth] = 0;
                 call_cnt += 1;
-                kssComValidCans(data_graph, query_graph, candidates, candidates_count, valid_cans,
+                ComputeValidCans(data_graph, query_graph, candidates, candidates_count, valid_cans,
                                  valid_cans_cnt, embedding, next_u, visited_u, visited_v);
                 
                 visited_u[next_u] = true;
@@ -623,12 +2525,14 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
             }
         }
 
+        // 回溯部分
         cur_depth -= 1;
         if (cur_depth == (ui)-1)
             break;
         VertexID last_u = kernel[cur_depth + 1];
         visited_v[embedding[kernel[cur_depth]]] = false;
         visited_u[last_u] = false;
+        // 恢复shell2kernel信息
         restoreShell2Kernel(query_graph, kernel[cur_depth], shell2kernel, kos);
     }
 
@@ -652,7 +2556,7 @@ EvaluateQuery::KSSEngine(const Graph *query_graph, const Graph *data_graph, Edge
     return overtime;
 }
 
-void
+void // 更新shell2kernel信息 // (zhijie) 能不能传引用呀 (以避免重复)
 EvaluateQuery::updateShell2Kernel(const Graph *query_graph, VertexID u, ui* shell2kernel, bool* kos, std::vector<VertexID> & update) {
     ui nbr_num = 0;
     const ui* nbrs = query_graph->getVertexNeighbors(u, nbr_num);
@@ -667,7 +2571,7 @@ EvaluateQuery::updateShell2Kernel(const Graph *query_graph, VertexID u, ui* shel
     }
 }
 
-void
+void  // 恢复shell2kernel信息
 EvaluateQuery::restoreShell2Kernel(const Graph *query_graph, VertexID u, ui* shell2kernel, bool* kos) {
     ui nbr_num = 0;
     const ui*nbrs = query_graph->getVertexNeighbors(u, nbr_num);
@@ -679,15 +2583,16 @@ EvaluateQuery::restoreShell2Kernel(const Graph *query_graph, VertexID u, ui* she
     }
 }
 
+// Naive 方法
 bool 
-EvaluateQuery::kssGenResult(ui shell_num, ui* shell, ui** valid_cans, ui* valid_cans_count, bool * visited_v,
+EvaluateQuery::computeKSSEmbeddingNaive(ui shell_num, ui* shell, ui** valid_cans, ui* valid_cans_count, bool * visited_v,
                                         mpz_t embedding_cnt, int64_t& time_limit) {
     
-    return kssGenResultImpl(0, shell_num, shell, valid_cans, valid_cans_count, visited_v, embedding_cnt, time_limit);
+    return computeKSSEmbeddingNaiveImpl(0, shell_num, shell, valid_cans, valid_cans_count, visited_v, embedding_cnt, time_limit);
 }
 
 bool 
-EvaluateQuery::kssGenResultImpl(ui depth, ui shell_num, ui* shell, ui** valid_cans, ui* valid_cans_count, bool * visited_v,
+EvaluateQuery::computeKSSEmbeddingNaiveImpl(ui depth, ui shell_num, ui* shell, ui** valid_cans, ui* valid_cans_count, bool * visited_v,
                                             mpz_t embedding_cnt, int64_t& time_limit) {
 
     if (TimeOp::getClockNan() >= time_limit) {
@@ -695,18 +2600,21 @@ EvaluateQuery::kssGenResultImpl(ui depth, ui shell_num, ui* shell, ui** valid_ca
     }
     VertexID u_shell = shell[depth];
 
+    // 对于叶子节点, 避免展开
     if (depth == shell_num - 1) {
+        // 使用 visited_u, 无法用 valid_cans_count[u_shell] - dup 的方式对叶节点计算
         for(ui i = 0; i < valid_cans_count[u_shell]; i++) {
             VertexID v_id = valid_cans[u_shell][i];
             if (!visited_v[v_id]) mpz_add_ui(embedding_cnt, embedding_cnt, 1);
         }
     }
+    // 对于剩余的节点，不加检查的进行展开 [与树状节点的区别是, 甚至不需要对邻居进行获取]
     else {
         for(ui i = 0; i < valid_cans_count[u_shell]; i++) {
             VertexID v_id = valid_cans[u_shell][i];
             if(!visited_v[v_id]){
                 visited_v[v_id] = true;
-                if (kssGenResultImpl(depth+1, shell_num, shell, valid_cans, valid_cans_count, visited_v,
+                if (computeKSSEmbeddingNaiveImpl(depth+1, shell_num, shell, valid_cans, valid_cans_count, visited_v,
                                                  embedding_cnt, time_limit) == true)
                     return true;
                 visited_v[v_id] = false;
@@ -716,8 +2624,6 @@ EvaluateQuery::kssGenResultImpl(ui depth, ui shell_num, ui* shell, ui** valid_ca
     return false;
 }
 
-// int64_t BSXIndex::getNeighbors_time = 0;
-// int64_t BSXIndex::update_time = 0;
 /**
  * use bsx method
  * not support edge label(so far)
@@ -730,14 +2636,10 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
     return 0;
 #endif
     ui q_num = query_graph->getVerticesCount();
-    // int64_t enumerate_time = 0;
-    // int64_t batch_time = 0;
-    // int64_t refine_time = 0;
-    // int64_t start_time;
     ui* order = nullptr;
     // separate leaf and trunk vertices(min_vertex_cover)
     ui num_cover = 0;
-    maxCoverOrder(query_graph, order, num_cover, candidates_count);
+    bsxMaxCoverOrder(query_graph, order, num_cover, candidates_count);
     auto num_indep = q_num - num_cover;
     const VertexID* indep_nodes =  order + num_cover;
 
@@ -762,9 +2664,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
 
     // init info of start vertex
     batch_info[start_vertex].add();
-    // start_time = TimeOp::getClockNan();
     bsxComEqBatch(index, start_vertex);
-    // batch_time += TimeOp::getClockNan() - start_time;
     index.valid_cans_[start_vertex].push(new VertexID[batch_info[start_vertex].maxCnt_.top()]);
     index.valid_cnt_[start_vertex].push(0);
 
@@ -776,7 +2676,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
     size_t last_dot_pos = g_name.find_last_of('.');
     if (last_dot_pos != std::string::npos)
         g_name = g_name.substr(0, last_dot_pos);
-    g_name = "./" + g_name;
+    g_name = "/root/subgraph/yujie/test/output/duplicate/citeseer/part/" + g_name;
     int status = mkdir(g_name.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
 
     if (status == 0) {
@@ -811,9 +2711,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
             std::copy(cur_batch, cur_batch+cur_batch_cnt, cur_cans);
             cur_cans_cnt = cur_batch_cnt;
 
-            // start_time = TimeOp::getClockNan();
             VertexID failed_u = bsxRefine(index, u);
-            // refine_time += TimeOp::getClockNan() - start_time;
             if (failed_u != (ui)-1) {  // no valid cans for next depth
                 continue;
             }
@@ -847,9 +2745,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
                 }
 #endif
                 // enumerate results on indep nodes, process ancestors' ves by the way
-                // start_time = TimeOp::getClockNan();
                 bsxGenResult(num_indep, indep_nodes, index);
-                // enumerate_time += TimeOp::getClockNan() - start_time;
                 mpz_add(embedding_cnt, embedding_cnt, level_embeddings);
                 if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
                     goto EXIT;
@@ -864,9 +2760,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
                 call_count++;
                 // construct nbrs&seperate batches, and then refinement
                 batch_info[cur_u].add();
-                // start_time = TimeOp::getClockNan();
                 bsxComEqBatch(index, cur_u);
-                // batch_time += TimeOp::getClockNan() - start_time;
                 index.valid_cans_[cur_u].push(new VertexID[batch_info[cur_u].maxCnt_.top()]);
                 index.valid_cnt_[cur_u].push(0);
                 visited_u[cur_u] = true;
@@ -878,6 +2772,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
         if (cur_depth == ui(-1))
             break;
         VertexID last_u = depth2u[cur_depth+1];
+        VertexID cur_u = depth2u[cur_depth];
         depth2u.resize(cur_depth+1);
         visited_u[last_u] = false;
 
@@ -896,11 +2791,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
         out_files[i-1].close();
     }
 #endif
-    // std::cout << "enumerate_time: " << enumerate_time << std::endl;
-    // std::cout << "refine_time: " << refine_time << std::endl;
-    // std::cout << "batch_time: " << batch_time << std::endl;
-    // std::cout << "getNeighbors_time: " << BSXIndex::getNeighbors_time << std::endl;
-    // std::cout << "update_time: " << BSXIndex::update_time << std::endl;
+
     return overtime;
 }
 
@@ -911,7 +2802,7 @@ EvaluateQuery::BSXEngine(const Graph *data_graph, const Graph *query_graph, Edge
  * compute static order by max indep cover, dynamic order computed along matching
 */
 void
-EvaluateQuery::maxCoverOrder(const Graph *graph, ui *&order, ui& num_cover, ui *candidates_count) {
+EvaluateQuery::bsxMaxCoverOrder(const Graph *graph, ui *&order, ui& num_cover, ui *candidates_count) {
     auto q_num = graph->getVerticesCount();
     if (order == nullptr) {
         order = new ui[q_num];
@@ -965,19 +2856,17 @@ void
 EvaluateQuery::bsxDeRefine(BSXIndex& index) {
     auto q_num = index.q_graph_->getVerticesCount();
     bool* nbr_updated = new bool[q_num];
-    // memset(nbr_updated, false, sizeof(bool)*q_num);
-    std::copy(index.visited_u, index.visited_u+q_num, nbr_updated);
+    memset(nbr_updated, false, sizeof(bool)*q_num);
 
     // process first u in influenced_u seperately, valid_cans of first_influenced_u comes from
     //   its batch_nodes, and couldn't be deleted
     auto first_u = index.influenced_u_.top()[0];
-    // nbr_updated[first_u] = true;
+    nbr_updated[first_u] = true;
     // remove index_, added at refinement
     ui nbrs_cnt;
     auto nbrs = index.q_graph_->getVertexNeighbors(first_u, nbrs_cnt);
     for (ui i = 0; i < nbrs_cnt; i++) {
         auto& nbr = nbrs[i];
-        if (nbr_updated[nbr]) continue;
         delete index.index_[nbr][first_u].top();
         delete index.index_[first_u][nbr].top();
         index.index_[nbr][first_u].pop();
@@ -1160,7 +3049,7 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
     for (ui i = 0; i < num_idxs; i++) {
         auto& idx = idxs[i];
         if (batch_idx[i] != 0) continue;
-        batch_idx[i] = batch_cnt;
+        batch_idx[i] = batch_cnt++;
         offset[num] = num == 0 ? 0 : offset[num-1]+cnt[num-1];  // set offset of cur_batch
         cnt[num] = 1;
         batches[offset[num]] = nodes[idx];
@@ -1187,8 +3076,7 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
             }
             if (equ == true) {
                 batch_idx[j] = batch_cnt;
-                batches[offset[num]+cnt[num]] = nodes[ev_idx];
-                cnt[num]++;
+                batches[offset[num]+(cnt[num]++)] = nodes[ev_idx];
             }
         }
         // process max_cnt
@@ -1196,7 +3084,6 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
         // no need for sort, because the idxs have been sorted and this fun. will not break it
         // std::sort(batch+offset[num], batch+(offset[num]+cnt[num]));
         num++;
-        batch_cnt++;
     }
     delete[] batch_idx;
 }
@@ -1205,7 +3092,6 @@ EvaluateQuery::bsxComEqBatchDirect(BSXIndex& index, VertexID u, std::vector<ui>&
 // if success, return -1, else return failed uId
 ui
 EvaluateQuery::bsxRefine(BSXIndex& index, VertexID u) {
-    // int64_t start_time;
     ui q_num = index.q_graph_->getVerticesCount();
     auto v = index.valid_cans_[u].top()[0];
     bool* influenced = new bool[q_num];
@@ -1221,6 +3107,7 @@ EvaluateQuery::bsxRefine(BSXIndex& index, VertexID u) {
         auto& unbr = unbrs[i];
         if (index.visited_u[unbr]) continue;
         // old valid_cans of unbr
+        auto& unbr_valid_cans = index.valid_cans_[unbr].top();
         auto& unbr_valid_cnt = index.valid_cnt_[unbr].top();
         ui vnbr_cnt;
         auto vnbrs = index.getNeighbors(u, unbr, v, vnbr_cnt);
@@ -1249,12 +3136,16 @@ EvaluateQuery::bsxRefine(BSXIndex& index, VertexID u) {
             index.valid_cnt_[unbr].push(vnbr_cnt);
         }
     }
+#if BSX_REFINE_RATIO != 100
+    returned_value  = bsxDynRefine(index, influenced);
+    if (returned_value != (ui)-1) {
+        goto bsxRefine_EXIT;
+    }
+#endif
     influenced[u] = true;
 
     // implement index.updateOneSide(influenced) later
-    // start_time = TimeOp::getClockNan();
-    index.updateIndex(influenced, u);
-    // BSXIndex::update_time += TimeOp::getClockNan() - start_time;
+    index.updateIndex(influenced);
     // if (index.updateIndex(influenced) == (ui)-1) {
     //     influenced[u] = false;
     //     for (ui i = 0; i < q_num; i++) {
@@ -1285,6 +3176,89 @@ EvaluateQuery::bsxRefine(BSXIndex& index, VertexID u) {
     bsxRefine_EXIT:
     delete[] influenced;
     delete[] influenced_cans;
+    return returned_value;
+}
+
+// equ-batch refine, just process first v of valid_cans, because of they are equ
+// support dynamic refinement based on the influence of u
+ui
+EvaluateQuery::bsxDynRefine(BSXIndex& index, bool* influenced) {
+    ui q_num = index.q_graph_->getVerticesCount();
+    auto& visited_u = index.visited_u;
+    auto& max_can_num = index.max_can_num_;
+    bool* updated = new bool[q_num];
+    memset(updated, false, sizeof(bool)*q_num);
+
+    // add vertices that need propogation to queue 
+    std::queue<VertexID> q_updated;
+    for (VertexID i = 0; i < q_num; i++) {
+        if (!influenced[i]) continue;
+        auto ratio = 100 * (index.index_cnt_[i] - index.valid_cnt_[i].top()) / index.index_cnt_[i];
+        if (ratio > BSX_REFINE_RATIO) q_updated.emplace(i);
+    }
+    ui returned_value = (ui)-1;
+    const ui** vnbrs_set = new const ui*[max_can_num];
+    ui* vnbrs_set_cnt = new ui[max_can_num];
+    // std::cout << "start refinement" << std::endl;
+    while(!q_updated.empty()) {
+        VertexID cur_u = q_updated.front();
+        q_updated.pop();
+        updated[cur_u] = true;
+        ui unbrs_cnt;
+        auto unbrs = index.q_graph_->getVertexNeighbors(cur_u, unbrs_cnt);
+        auto& part_cnt = index.valid_cnt_[cur_u].top();
+        auto& part_nodes = index.valid_cans_[cur_u].top();
+        
+        for (ui i = 0; i < unbrs_cnt; i++) {
+            auto unbr = unbrs[i];
+            // std::cout << "nbr_" << i << ": " << nbr << std::endl;
+            // if influenced && has been updated, means the edge(u-nbr) has been checked
+            if (visited_u[unbr] || updated[unbr]) continue;
+            for (ui j = 0; j < part_cnt; j++) {
+                auto u_can = part_nodes[j];
+                vnbrs_set[j] = index.getNeighbors(cur_u, unbr, u_can, vnbrs_set_cnt[j]);
+            }
+            auto& unbr_valid_cans = index.valid_cans_[unbr].top();
+            auto& unbr_valid_cnt = index.valid_cnt_[unbr].top();
+            auto new_valid_cans = std::move(SetOp::unionMultiple(vnbrs_set, vnbrs_set_cnt, part_cnt));
+            auto intersected = std::move(SetOp::intersectTwo(new_valid_cans, unbr_valid_cans, unbr_valid_cnt));
+            if (intersected.size() != index.valid_cnt_[unbr].top()) {  // need update nbr
+                if (intersected.size() == 0) {
+                    std::queue<VertexID> empty_q;
+                    q_updated.swap(empty_q);
+                    returned_value = unbr;
+                    break;
+                }
+                if (!influenced[unbr]) {
+                    auto ratio = 100 * (unbr_valid_cnt - intersected.size()) / unbr_valid_cnt;
+                    if (ratio > BSX_REFINE_RATIO) q_updated.emplace(unbr);
+                    auto new_valid_cans = new VertexID[intersected.size()];
+                    std::copy(intersected.begin(), intersected.end(), new_valid_cans);
+                    index.valid_cans_[unbr].push(new_valid_cans);
+                    index.valid_cnt_[unbr].push(intersected.size());
+                    influenced[unbr] = true;
+                } else {
+                    // update valid_cans&valid_cnt of nbr for index update
+                    std::copy(intersected.begin(), intersected.end(), unbr_valid_cans);
+                    unbr_valid_cnt = intersected.size();
+                }
+            }
+        }
+    }
+
+    if (returned_value != (ui)-1) {
+        for (VertexID i = 0; i < q_num; i++) {
+            if (influenced[i]) {
+                delete[] index.valid_cans_[i].top();
+                index.valid_cans_[i].pop();
+                index.valid_cnt_[i].pop();
+            }
+        }
+    }
+
+    delete[] vnbrs_set;
+    delete[] vnbrs_set_cnt;
+    delete[] updated;
     return returned_value;
 }
 
@@ -1336,7 +3310,7 @@ EvaluateQuery::bsxGenResult(ui indep_num, const VertexID* indep, BSXIndex& index
             // auto v_cans_cnt = v_cans.size();
             // int forward_idx = 0;
             // int backward_idx = v_cans_cnt - 1;  // backward_idx may be -1
-            // upward_sep = sepDiff(v_cans, indep_con_cnt, forward_idx, backward_idx);
+            // upward_sep = bsxSepDiff(v_cans, indep_con_cnt, forward_idx, backward_idx);
             for (auto v_can:v_cans) indep_con_cnt[v_can]++;
         }
         // 2.second scan, compute downward conflict
@@ -1350,12 +3324,12 @@ EvaluateQuery::bsxGenResult(ui indep_num, const VertexID* indep, BSXIndex& index
             // int middle_idx = sep_flag[cur_idx][1];
             // int backward_idx = v_cans_cnt - 1;
             for (auto v_can:v_cans) indep_con_cnt[v_can]--;
-            downward_sep0 = sepDiff(v_cans, indep_con_cnt, forward_idx, v_cans_cnt - 1);
-            // downward_sep1 = sepDiff(v_cans, indep_con_cnt, middle_idx, backward_idx);
+            downward_sep0 = bsxSepDiff(v_cans, indep_con_cnt, forward_idx, v_cans_cnt - 1);
+            // downward_sep1 = bsxSepDiff(v_cans, indep_con_cnt, middle_idx, backward_idx);
         }
         // 3.enumerate the nodes based on diff features of 4 parts
         // ** just 2 parts so far
-        enum4Parts(sep_flag, nodes, nodes_num, cans, visited_v, label_embeddings);
+        bsxEnumerate4Parts(sep_flag, nodes, nodes_num, cans, visited_v, label_embeddings);
         mpz_mul(embedding_cnt, embedding_cnt, label_embeddings);
         if (mpz_cmp_ui(embedding_cnt, 0) == 0) return;
     }
@@ -1365,7 +3339,7 @@ EvaluateQuery::bsxGenResult(ui indep_num, const VertexID* indep, BSXIndex& index
 
 // according to indep_con_cnt info, seperate v_cans into two parts, return the #first_part(true)
 ui
-EvaluateQuery::sepDiff(std::vector<VertexID> &v_cans, const ui *indep_con_cnt, int forward_idx, int backward_idx) {
+EvaluateQuery::bsxSepDiff(std::vector<VertexID> &v_cans, const ui *indep_con_cnt, int forward_idx, int backward_idx) {
     if (backward_idx-forward_idx == 0) return indep_con_cnt[v_cans[forward_idx]] != 0;
     ui first_con_cnt = indep_con_cnt[v_cans[forward_idx]];
     VertexID first_idx = v_cans[forward_idx];
@@ -1384,7 +3358,7 @@ EvaluateQuery::sepDiff(std::vector<VertexID> &v_cans, const ui *indep_con_cnt, i
 
 // TODO: opt to three parts
 void  // 4 parts: up-down,up-x,x-down,x-x; down&x 2 parts so far
-EvaluateQuery::enum4Parts(ui **&sep_flags, const VertexID* nodes, ui nodes_num,
+EvaluateQuery::bsxEnumerate4Parts(ui **&sep_flags, const VertexID* nodes, ui nodes_num,
                                    std::vector<std::vector<VertexID>>& cans, bool *&visited_v,
                                    mpz_t cur_cnt) {
     ui depth = 0;
@@ -1455,1406 +3429,4 @@ EvaluateQuery::enum4Parts(ui **&sep_flags, const VertexID* nodes, ui nodes_num,
     }
     delete[] embedding_level;
     return;
-}
-
-vector<ui> EdgeSub::down_record;
-/**
- * use FiPE method
-*/
-bool
-EvaluateQuery::FiPEEngine(const Graph *data_graph, const Graph *query_graph, Edges ***edge_matrix,
-                             ui **candidates, ui *candidates_count,
-                             size_t output_limit_num, size_t &call_count, mpz_t embedding_cnt, int64_t& time_limit) {
-    auto qnum = query_graph->getVerticesCount();
-    VertexID* order = new VertexID[qnum];
-    ui num_cover = FiPEIndep::indepSetOnDegree(query_graph, order);
-    // main data structure
-    FiPEIndex index(query_graph, data_graph, edge_matrix, candidates, candidates_count, num_cover, order);
-    EdgeSub::down_record.resize(data_graph->getVerticesCount(), (ui)-1);
-
-    // auxiliary data structure
-    bool overtime = false;
-    mpz_init_set_ui(embedding_cnt, 0);
-    ui cur_depth = 0;
-    VertexID start_vertex = order[cur_depth];
-    auto& level_embeddings = index.indepInfo->embedding_total;
-    auto& subInfo = index.subInfo_;
-
-    splitCans(index, cur_depth);
-    while (!comStartCans(index) || !comCurSpace(index, cur_depth)) {
-        if (nxtSubCans(index, cur_depth) == false) goto EXIT;
-    }
-    comSub(index, cur_depth);
-
-    while (true) {
-        while (subInfo[cur_depth].subs.cur_s < subInfo[cur_depth].subs.c_cnt) {
-            VertexID u = order[cur_depth];
-
-            if (TimeOp::getClockNan() >= time_limit) {
-                overtime = true;
-                goto EXIT;
-            }
-
-            if (subInfo[cur_depth].connected) setCurSpaceCon(index, cur_depth);
-            else setCurSpaceDis(index, cur_depth);
-            subInfo[cur_depth].subs.cur_s++;
-
-            if (cur_depth >= num_cover - 2) {
-                // enumerate results on indep nodes, process ancestors' ves by the way
-                // mpz_ui_sub(index.indepInfo->remained, output_limit_num, embedding_cnt);
-                FiPEEnum(index);
-                mpz_add(embedding_cnt, embedding_cnt, level_embeddings);
-                if (output_limit_num != (size_t)-1 && mpz_cmp_ui(embedding_cnt, output_limit_num) > 0) {
-                    goto EXIT;
-                }
-                // nxt batch
-                if (subInfo[cur_depth].connected) clearCurSpaceCon(index, cur_depth);
-                else clearCurSpaceDis(index, cur_depth);
-            } else {
-                cur_depth++;
-                splitCans(index, cur_depth);
-                bool nxt_valid = true;
-                while (!comCurSpace(index, cur_depth)) {
-                    if (!nxtSubCans(index, cur_depth)) {
-                        index.subCans_[cur_depth+1].splitted = false;
-                        nxt_valid = false;
-                        break;
-                    }
-                }
-                if (!nxt_valid) break;
-                comSub(index, cur_depth);
-                call_count++;
-            }
-        }
-
-        // backtracking
-        bool nxt_valid = true;
-        if (nxtSubCans(index, cur_depth)) {
-            if (cur_depth == 0) {
-                while (!comStartCans(index) || !comCurSpace(index, cur_depth)) {
-                    if (!nxtSubCans(index, cur_depth)) {
-                        nxt_valid = false;
-                        break;
-                    }
-                }
-            } else {
-               while (!comCurSpace(index, cur_depth)) {
-                    if (nxtSubCans(index, cur_depth) == false) {
-                        nxt_valid = false;
-                        break;
-                    }
-                }
-            }
-            if (nxt_valid) {
-                comSub(index, cur_depth);
-                continue;
-            }
-        }
-        cur_depth--;
-        if (cur_depth == ui(-1))
-            break;
-        if (subInfo[cur_depth].connected) clearCurSpaceCon(index, cur_depth);
-        else clearCurSpaceDis(index, cur_depth);
-    }
-
-    // Release the buffer.
-    EXIT:
-    return overtime;
-}
-
-
-/**
- * split cans when there are too much cans
- */
-inline void
-EvaluateQuery::splitCans(FiPEIndex& index, ui depth) {
-    auto& down = index.order_[depth+1];
-    auto& subCans = index.subCans_[depth+1];
-    subCans.up_changed = true;
-    if (depth == 0) {
-        auto& up = index.order_[depth];
-        auto& upCans = index.subCans_[depth];
-        if (index.valid_cans_[up].back().size() > MIN_SUBCANS) {
-            upCans.splitted = true;
-            upCans.cur_start = 0;
-            upCans.cur_end = MIN_SUBCANS;
-            vector<VertexID> new_cans;
-            new_cans.reserve(MIN_SUBCANS);
-            new_cans.insert(new_cans.end(),
-                            index.valid_cans_[up].back().begin(),
-                            index.valid_cans_[up].back().begin()+MIN_SUBCANS);
-            index.valid_cans_[up].push_back(move(new_cans));
-        } else {
-            upCans.splitted = false;
-        }
-    }
-    // if too much candidates, split
-    if (!index.subInfo_[depth].connected
-        && index.valid_cans_[down].back().size() > MIN_SUBCANS) {
-        subCans.splitted = true;
-        subCans.cur_start = 0;
-        subCans.cur_end = MIN_SUBCANS;
-        vector<VertexID> new_cans;
-        new_cans.reserve(MIN_SUBCANS);
-        new_cans.insert(new_cans.end(),
-                        index.valid_cans_[down].back().begin(),
-                        index.valid_cans_[down].back().begin()+MIN_SUBCANS);
-        index.valid_cans_[down].push_back(move(new_cans));
-    } else {
-        subCans.splitted = false;
-    }
-    return;
-}
-
-/**
- * nxt sub cans
- * false->splited but have no next subset of cans, true->o.w.
- */
-inline bool
-EvaluateQuery::nxtSubCans(FiPEIndex& index, ui depth) {
-    auto& down = index.order_[depth+1];
-    auto& subCans = index.subCans_[depth+1];
-    subCans.up_changed = false;
-    if (subCans.splitted) index.valid_cans_[down].pop_back();
-    if (depth == 0) {
-        auto& up = index.order_[depth];
-        auto& upCans = index.subCans_[depth];
-        if (subCans.splitted == false
-            || subCans.cur_end == index.valid_cans_[down].back().size()) {
-            if (upCans.splitted) index.valid_cans_[up].pop_back();
-            if (upCans.splitted == false
-                || upCans.cur_end == index.valid_cans_[up].back().size()) {
-                return false;
-            }
-            upCans.cur_start = upCans.cur_end;
-            upCans.cur_end = min(upCans.cur_end + MIN_SUBCANS,
-                                 (ui)index.valid_cans_[up].back().size());
-            vector<VertexID> new_cans;
-            new_cans.reserve(MIN_SUBCANS);
-            new_cans.insert(new_cans.end(),
-                            index.valid_cans_[up].back().begin()+upCans.cur_start,
-                            index.valid_cans_[up].back().begin()+upCans.cur_end);
-            index.valid_cans_[up].push_back(move(new_cans));
-            subCans.up_changed = true;
-            subCans.cur_start = 0;
-            subCans.cur_end = MIN_SUBCANS;
-        } else {
-            subCans.cur_start = subCans.cur_end;
-            subCans.cur_end = min(subCans.cur_end + MIN_SUBCANS,
-                                  (ui)index.valid_cans_[down].back().size());
-        }
-    } else {
-        if (subCans.splitted == false
-            || subCans.cur_end == index.valid_cans_[down].back().size())
-            return false;
-        subCans.cur_start = subCans.cur_end;
-        subCans.cur_end = min(subCans.cur_end + MIN_SUBCANS,
-                              (ui)index.valid_cans_[down].back().size());
-    }
-    if (subCans.splitted) {
-        vector<VertexID> new_cans;
-        new_cans.reserve(MIN_SUBCANS);
-        new_cans.insert(new_cans.end(),
-                        index.valid_cans_[down].back().begin()+subCans.cur_start,
-                        index.valid_cans_[down].back().begin()+subCans.cur_end);
-        index.valid_cans_[down].push_back(move(new_cans));
-    }
-    return true;
-}
-
-/**
- * 1.set valid_cans of cur_s
- * 3.push valid_cans from inf_cans to FiPEIndex
- * 1.generate sub_cans for next_u
- *   1.1 connected: union of nbrs from (sub_cans of u) to next_u
- *   1.2 o.w.: u will not influence the cans of next_u
- * 2.compute the valid edges for current u & u_n-1(if conncected)
- * return: false, if valid_cans of delayed_nbrs is empty
-*/
-bool
-EvaluateQuery::setCurSpaceCon(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& subs = subInfo.subs;
-    auto& down_cans = subInfo.down_cans;  // down_idx->down_cans
-    auto& down_idxs = subInfo.down_idxs;  // edge_idx->down_idx
-    auto& edge_up_idxs = subs.edge_up_idxs;
-    auto& edge_down_idxs = subs.edge_down_idxs;
-    auto& cur_s = subs.cur_s;
-    auto& edge_up_start = subs.edge_up_offset[cur_s];
-    auto& edge_up_end = subs.edge_up_offset[cur_s+1];
-    auto& edge_down_start = subs.edge_down_offset[edge_up_start];
-    auto& edge_down_end = subs.edge_down_offset[edge_up_end];
-    auto& down_record = subs.down_record;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& valid_cans = index.valid_cans_;
-
-    if (depth < index.indepInfo->num_cover_-2) {
-        // compute up_cans of nxtSub
-        auto& nxtSub = index.subInfo_[depth+1];
-        auto& nxt_up_cans = nxtSub.up_cans;
-        nxt_up_cans.clear();
-        auto& nxt_up_idxs = subInfo.nxt_up_idxs;
-        auto& last_down_idxs = nxtSub.last_down_idxs;
-        nxt_up_idxs.resize(down_cans.size());
-        last_down_idxs.clear();
-        for (ui i = edge_down_start; i < edge_down_end; i++) {
-            auto& edge_idx = edge_down_idxs[i];
-            auto& down_idx = down_idxs[edge_idx];  // idx of influenced
-            auto& down = down_cans[down_idx];
-            if (down_record[down] == (ui)-1) {
-                down_record[down] = nxt_up_cans.size();
-                nxt_up_cans.emplace_back(down);
-                last_down_idxs.emplace_back(down_idx);
-                nxt_up_idxs[down_idx] = down_record[down];
-            }
-        }
-        for (auto& nxt_up_can : nxt_up_cans) down_record[nxt_up_can] = (ui)-1;
-
-        // compute the valid_cans of delayed_nbrs
-        auto& delayed_nbrs = subInfo.nbrs.delayed_;
-        subInfo.delayed_inf.clear();
-        subInfo.delayed_inf.resize(delayed_nbrs.size(), true);
-        for (ui i = 0; i < delayed_nbrs.size(); i++) {
-            auto& delayed_nbr = delayed_nbrs[i];
-            // if any can do not influence shared_nbr, valid_cans keeps
-            for (ui j = 0; j < nxt_up_cans.size(); j++) {
-                auto& down_idx = last_down_idxs[j];
-                if (!influenced[delayed_nbr][down_idx]) {
-                    subInfo.delayed_inf[i] = false;
-                    break;
-                }
-            }
-            if (subInfo.delayed_inf[i]) {
-                vector<vector<VertexID>> all_cans;
-                all_cans.reserve(nxt_up_cans.size());
-                for (ui j = 0; j < nxt_up_cans.size(); j++) {
-                    auto& down_idx = last_down_idxs[j];
-                    all_cans.emplace_back(inf_cans[delayed_nbr][down_idx]);
-                }
-                valid_cans[delayed_nbr].push_back(move(SetOp::unionMultiple(all_cans)));
-            }
-        }
-    }
-
-    // push valid_cans from inf_cans to FiPEIndex
-    // use the first as the representative
-    auto& up_idx = edge_up_idxs[edge_up_start];
-    for (auto& nbr : subInfo.nbrs.up_indep_) {
-        if (influenced[nbr][up_idx]) {
-            valid_cans[nbr].push_back(inf_cans[nbr][up_idx]);
-        }
-    }
-    auto& edge_idx = edge_down_idxs[edge_down_start];
-    for (auto& nbr : subInfo.nbrs.shared_) {
-        if (influenced[nbr][edge_idx]) {
-            valid_cans[nbr].push_back(move(inf_cans[nbr][edge_idx]));
-        }
-    }
-    auto down_idx = down_idxs[edge_idx];
-    for (auto& nbr : subInfo.nbrs.down_indep_) {
-        if (influenced[nbr][down_idx]) {
-            valid_cans[nbr].push_back(inf_cans[nbr][down_idx]);
-        }
-    }
-    return true;
-}
-
-/**pop the valid_cans of influenced_u from FiPEIndex
-*/
-void
-EvaluateQuery::clearCurSpaceCon(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& subs = subInfo.subs;
-    auto& down_idxs = subInfo.down_idxs;  // edge_idx->down_idx
-    auto& edge_up_idxs = subs.edge_up_idxs;
-    auto& edge_down_idxs = subs.edge_down_idxs;
-    auto& cur_s = subs.cur_s;
-    auto& edge_up_start = subs.edge_up_offset[cur_s-1];
-    auto& edge_down_start = subs.edge_down_offset[edge_up_start];
-    auto& influenced = subInfo.influenced;
-    auto& valid_cans = index.valid_cans_;
-    auto& delayed_inf = subInfo.delayed_inf;
-    // pop valid_cans from inf_cans to FiPEIndex
-    // use the first as the representative
-    auto& up_idx = edge_up_idxs[edge_up_start];
-    for (auto& nbr : subInfo.nbrs.up_indep_) {
-        if (influenced[nbr][up_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    auto& edge_idx = edge_down_idxs[edge_down_start];
-    for (auto& nbr : subInfo.nbrs.shared_) {
-        if (influenced[nbr][edge_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    auto down_idx = down_idxs[edge_idx];
-    for (auto& nbr : subInfo.nbrs.down_indep_) {
-        if (influenced[nbr][down_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    for (ui i = 0; i < subInfo.nbrs.delayed_.size(); i++) {
-        if (delayed_inf[i]) {
-            valid_cans[subInfo.nbrs.delayed_[i]].pop_back();
-        }
-    }
-}
-
-void
-EvaluateQuery::setCurSpaceDis(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& subs = subInfo.subs;
-    auto& down_cans = subInfo.down_cans;  // down_idx->down_cans
-    auto& edge_down_idxs = subs.edge_down_idxs;
-    auto& cur_s = subs.cur_s;
-    auto& edge_down_start = subs.edge_down_offset[cur_s];
-    auto& edge_down_end = subs.edge_down_offset[cur_s+1];
-    auto& down_record = subs.down_record;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& valid_cans = index.valid_cans_;
-    ui down_num = down_cans.size();
-
-    if (depth < index.indepInfo->num_cover_-2) {
-        // compute up_cans of nxtSub
-        auto& nxtSub = index.subInfo_[depth+1];
-        auto& nxt_up_cans = nxtSub.up_cans;
-        auto& nxt_up_idxs = subInfo.nxt_up_idxs;
-        auto& last_down_idxs = nxtSub.last_down_idxs;
-        nxt_up_idxs.resize(down_cans.size());
-        last_down_idxs.clear();
-        nxt_up_cans.clear();
-        for (ui i = edge_down_start; i < edge_down_end; i++) {
-            auto& edge_idx = edge_down_idxs[i];  // idx of influenced(shared)
-            ui down_idx = edge_idx%down_num;       // idx of influenced(indep)
-            auto& down = down_cans[down_idx];
-            if (down_record[down] == (ui)-1) {
-                down_record[down] = nxt_up_cans.size();
-                nxt_up_cans.emplace_back(down);
-                last_down_idxs.emplace_back(down_idx);
-                nxt_up_idxs[down_idx] = down_record[down];
-            }
-        }
-        for (auto& nxt_up_can : nxt_up_cans) down_record[nxt_up_can] = (ui)-1;
-
-        // compute the valid_cans of delayed_nbrs
-        auto& delayed_nbrs = subInfo.nbrs.delayed_;
-        subInfo.delayed_inf.clear();
-        subInfo.delayed_inf.resize(delayed_nbrs.size(), true);
-        for (ui i = 0; i < delayed_nbrs.size(); i++) {
-            auto& delayed_nbr = delayed_nbrs[i];
-            // if any can do not influence shared_nbr, valid_cans keeps
-            subInfo.delayed_inf[i] = true;
-            for (ui j = 0; j < nxt_up_cans.size(); j++) {
-                auto& down_idx = last_down_idxs[j];
-                if (!influenced[delayed_nbr][down_idx]) {
-                    subInfo.delayed_inf[i] = false;
-                    break;
-                }
-            }
-            if (subInfo.delayed_inf[i]) {
-                vector<vector<VertexID>> all_cans;
-                all_cans.reserve(nxt_up_cans.size());
-                for (ui j = 0; j < nxt_up_cans.size(); j++) {
-                    auto& down_idx = last_down_idxs[j];
-                    all_cans.emplace_back(inf_cans[delayed_nbr][down_idx]);
-                }
-                valid_cans[delayed_nbr].push_back(move(SetOp::unionMultiple(all_cans)));
-            }
-        }
-    }
-
-    // push valid_cans from inf_cans to FiPEIndex
-    // use the first as the representative
-    auto& edge_idx = edge_down_idxs[edge_down_start];
-    auto up_idx = edge_idx/down_num;
-    auto down_idx = edge_idx%down_num;
-    for (auto& nbr : subInfo.nbrs.up_indep_) {
-        if (influenced[nbr][up_idx]) {
-            valid_cans[nbr].push_back(inf_cans[nbr][up_idx]);
-        }
-    }
-    for (auto& nbr : subInfo.nbrs.shared_) {
-        if (influenced[nbr][edge_idx]) {
-            valid_cans[nbr].push_back(move(inf_cans[nbr][edge_idx]));
-        }
-    }
-    for (auto& nbr : subInfo.nbrs.down_indep_) {
-        if (influenced[nbr][down_idx]) {
-            valid_cans[nbr].push_back(inf_cans[nbr][down_idx]);
-        }
-    }
-}
-
-/**pop the valid_cans of influenced_u from FiPEIndex
-*/
-void
-EvaluateQuery::clearCurSpaceDis(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& subs = subInfo.subs;
-    auto& down_cans = subInfo.down_cans;
-    auto& edge_down_idxs = subs.edge_down_idxs;
-    auto& cur_s = subs.cur_s;
-    auto& edge_down_start = subs.edge_down_offset[cur_s-1];
-    auto& influenced = subInfo.influenced;
-    auto& valid_cans = index.valid_cans_;
-    auto& delayed_inf = subInfo.delayed_inf;
-    ui down_num = down_cans.size();
-    // use the first as the representative
-    auto& edge_idx = edge_down_idxs[edge_down_start];
-    auto up_idx = edge_idx/down_num;
-    auto down_idx = edge_idx%down_num;
-    for (auto& nbr : subInfo.nbrs.up_indep_) {
-        if (influenced[nbr][up_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    for (auto& nbr : subInfo.nbrs.shared_) {
-        if (influenced[nbr][edge_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    for (auto& nbr : subInfo.nbrs.down_indep_) {
-        if (influenced[nbr][down_idx]) {
-            valid_cans[nbr].pop_back();
-        }
-    }
-    for (ui i = 0; i < subInfo.nbrs.delayed_.size(); i++) {
-        if (delayed_inf[i]) {
-            valid_cans[subInfo.nbrs.delayed_[i]].pop_back();
-        }
-    }
-}
-
-void
-EvaluateQuery::FiPEEnum(FiPEIndex& index) {
-#ifdef ANALYZE_TIME
-    auto start_time = TimeOp::getClockNan();
-#endif
-    auto qnum = index.q_graph_->getVerticesCount();
-    auto dnum = index.d_graph_->getVerticesCount();
-    auto& order = index.order_;
-    auto& used_cans = index.indepInfo->used_cans_;
-    memset(used_cans, false, sizeof(bool)*dnum);
-    auto& embedding_total = index.indepInfo->embedding_total;
-    mpz_set_ui(embedding_total, 0);
-    auto& embedding_uncon = index.indepInfo->embedding_uncon;
-    auto& uncon = index.indepInfo->uncon;
-    uncon = false;
-    auto& embedding_step = index.indepInfo->embedding_step;
-    auto& cans = index.indepInfo->cans;
-    auto& visited_v = index.visited_v;
-    auto& subInfo = index.subInfo_;
-
-    // extract the candidates of indep vertices
-    for (VertexID i = 0; i < qnum; i++) {
-        if (index.indepInfo->indep_bool[i]) {
-            cans[i] = index.valid_cans_[i].back();
-            for (auto& can:cans[i]) used_cans[can] = true;
-        }
-    }
-
-    auto& num_cover = index.indepInfo->num_cover_;
-    static vector<ui> idx(num_cover);
-    static vector<pair<ui, ui>> up_down_idxs(num_cover-1);  // up_idx & down_idx of matched edges
-    static ui depth;
-    static vector<vector<ui>> edges_idxs(num_cover-1);
-    depth = 0;
-    ui edge_start, edge_end;
-    if (subInfo[depth].connected) {
-        auto& edge_up_start = subInfo[depth].subs.edge_up_offset[index.subInfo_[depth].subs.cur_s-1];
-        auto& edge_up_end = subInfo[depth].subs.edge_up_offset[index.subInfo_[depth].subs.cur_s];
-        edge_start = subInfo[depth].subs.edge_down_offset[edge_up_start];
-        edge_end = subInfo[depth].subs.edge_down_offset[edge_up_end];
-    } else {
-        edge_start = subInfo[depth].subs.edge_down_offset[index.subInfo_[depth].subs.cur_s-1];
-        edge_end = subInfo[depth].subs.edge_down_offset[index.subInfo_[depth].subs.cur_s];
-    }
-    edges_idxs[depth].clear();
-    for (ui i = edge_start; i < edge_end; i++) {
-        edges_idxs[depth].emplace_back(index.subInfo_[depth].subs.edge_down_idxs[i]);
-    }
-    idx[depth] = 0;
-    static ui con_num;  // record the conflicts number
-    con_num = 0;
-    while(true) {
-        while(idx[depth] < edges_idxs[depth].size()) {
-            ui up_idx, down_idx;
-            auto& edge_idx =  edges_idxs[depth][idx[depth]];
-            idx[depth]++;
-            if (index.subInfo_[depth].connected) {
-                up_idx = index.subInfo_[depth].up_idxs[edge_idx];
-                down_idx = index.subInfo_[depth].down_idxs[edge_idx];
-            } else {
-                auto down_num = index.subInfo_[depth].down_cans.size();
-                up_idx = edge_idx/down_num;
-                down_idx = edge_idx%down_num;
-            }
-            up_down_idxs[depth] = make_pair(up_idx, down_idx);
-            auto& up = index.subInfo_[depth].up_cans[up_idx];
-            auto& down = index.subInfo_[depth].down_cans[down_idx];
-            if (depth == 0) {
-                if (up == down) continue;
-                cans[order[depth]][0] = up;
-                if (used_cans[up]) con_num++;
-                visited_v[up] = true;
-            }
-            if (visited_v[down]) continue;
-            visited_v[down] = true;
-            if (used_cans[down]) con_num++;
-            cans[order[depth+1]][0] = down;
-            if (depth >= num_cover - 2) {
-                if (con_num == 0 && uncon == true) {  // no conflicts & searched the no-conflicts case
-                    mpz_add(embedding_total, embedding_total, embedding_uncon);
-                } else {
-#ifdef FIPE_HOMOMORPHISM
-                    index.indepInfo->homoEnum();
-#else
-                    index.indepInfo->enumeration(index.q_graph_);
-#endif
-                    if (con_num == 0) {  // no conflicts, record the results
-                        mpz_set(embedding_uncon, embedding_step);
-                        uncon = true;
-                    }
-                    mpz_add(embedding_total, embedding_total, embedding_step);
-                }
-                // if (mpz_cmp(embedding_total, index.indepInfo->remained) > 0) return;
-                if (depth == 0) {
-                    if (used_cans[up]) con_num--;
-                    visited_v[up] = false;
-                }
-                if (used_cans[down]) con_num--;
-                visited_v[down] = false;
-            } else {
-                depth++;
-                // compute the valid_edges of nxt depth, based on down_idx
-                if (subInfo[depth].connected) {
-                    ui nxt_idx = subInfo[depth-1].nxt_up_idxs[down_idx];
-                    auto& edge_up_start = subInfo[depth].subs.edge_up_offset[index.subInfo_[depth].subs.cur_s-1];
-                    auto& edge_up_end = subInfo[depth].subs.edge_up_offset[index.subInfo_[depth].subs.cur_s];
-                    ui edge_up_idx;
-                    for (edge_up_idx = edge_up_start; edge_up_idx < edge_up_end; edge_up_idx++) {
-                        if (subInfo[depth].subs.edge_up_idxs[edge_up_idx] == nxt_idx) break;
-                    }
-                    if (edge_up_idx == edge_up_end) {  // if nxt_idx is invalid in nxtSub
-                        break;
-                    }
-                    edge_start = subInfo[depth].subs.edge_down_offset[edge_up_idx];
-                    edge_end = subInfo[depth].subs.edge_down_offset[edge_up_idx+1];
-                    edges_idxs[depth].clear();
-                    for (ui i = edge_start; i < edge_end; i++) {
-                        edges_idxs[depth].emplace_back(index.subInfo_[depth].subs.edge_down_idxs[i]);
-                    }
-                } else {
-                    ui nxt_idx = subInfo[depth-1].nxt_up_idxs[down_idx];
-                    auto down_num = index.subInfo_[depth].down_cans.size();
-                    edge_start = subInfo[depth].subs.edge_down_offset[index.subInfo_[depth].subs.cur_s-1];
-                    edge_end = subInfo[depth].subs.edge_down_offset[index.subInfo_[depth].subs.cur_s];
-                    edges_idxs[depth].clear();
-                    for (ui i = edge_start; i < edge_end; i++) {
-                        auto& edge_idx = subInfo[depth].subs.edge_down_idxs[i];
-                        if (edge_idx/down_num == nxt_idx)
-                            edges_idxs[depth].emplace_back(index.subInfo_[depth].subs.edge_down_idxs[i]);
-                    }
-                }
-                idx[depth] = 0;
-            }
-        }
-        depth--;
-        if (depth == (ui)-1) break;
-        ui up_idx, down_idx;
-        auto& edge_idx =  edges_idxs[depth][idx[depth]-1];
-        if (index.subInfo_[depth].connected) {
-            up_idx = index.subInfo_[depth].up_idxs[edge_idx];
-            down_idx = index.subInfo_[depth].down_idxs[edge_idx];
-        } else {
-            auto down_num = index.subInfo_[depth].down_cans.size();
-            up_idx = edge_idx/down_num;
-            down_idx = edge_idx%down_num;
-        }
-        up_down_idxs[depth] = make_pair(up_idx, down_idx);
-        auto& up = index.subInfo_[depth].up_cans[up_idx];
-        auto& down = index.subInfo_[depth].down_cans[down_idx];
-        if (depth == 0) {
-            if (used_cans[up]) con_num--;
-            visited_v[up] = false;
-        }
-        if (used_cans[down]) con_num--;
-        visited_v[down] = false;
-    }
-
-#ifdef ANALYZE_TIME
-    FiPEIndex::enumerate_time += TimeOp::getClockNan() - start_time;
-#endif
-    return;
-}
-
-/**
- * compute substitutable information for up & down cans
- */
-void
-EvaluateQuery::comSub(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& up_cans = subInfo.up_cans;
-    auto& subs = subInfo.subs;
-    subs.cur_s = 0;
-    auto& up_indep = subInfo.nbrs.up_indep_;
-    auto& down_indep = subInfo.nbrs.down_indep_;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-
-    // compute sub by using 2 offset alternately
-    // c_* store the complete sub info, p_* store FiPE sub info
-    auto& c_cnt = subs.c_cnt;
-    auto& c_offset = subs.edge_up_offset;
-    auto& c_idxs = subs.edge_up_idxs;
-    auto& p_cnt = subs.p_cnt;
-    auto& p_offset = subs.p_edge_up_offset;
-    auto& p_idxs = subs.p_edge_up_idxs;
-    bool same = true;
-
-    // init up subs
-    auto& up_group_num = subInfo.subs.up_group_num;
-    c_offset.resize(up_cans.size()+1);
-    p_offset.resize(up_cans.size()+1);
-    c_idxs.resize(up_cans.size());
-    p_idxs.resize(up_cans.size());
-    up_group_num.clear();
-    up_group_num.resize(up_cans.size(), 0);  // 0->no group
-    c_cnt = 1;
-    c_offset[0] = 0; c_offset[1] = up_cans.size();
-    for (ui i = 0; i < up_cans.size(); i++) c_idxs[i] = i;
-
-    // up_indep, just separate up_cans(idxs), only work with start vertex
-    for (auto& unbr : up_indep) {
-        vector<bool> up_grouped(c_idxs.size(), false);
-        p_cnt = 0;
-        for (ui i = 0; i < c_cnt; i++) {
-            auto start = c_offset[i], end = c_offset[i+1];
-            for (auto idx1 = start; idx1 < end; idx1++) {
-                auto& cans_idx1 = c_idxs[idx1];
-                if (up_grouped[cans_idx1]) continue;
-                p_cnt++;
-                up_grouped[cans_idx1] = true;
-                up_group_num[cans_idx1] = p_cnt;
-                p_offset[p_cnt] = p_offset[p_cnt-1];
-                p_idxs[p_offset[p_cnt]++] = cans_idx1;
-                auto& cans1 = inf_cans[unbr][cans_idx1];
-                for (auto idx2 = idx1 + 1; idx2 < end; idx2++) {
-                    auto& cans_idx2 = c_idxs[idx2];
-                    auto& cans2 = inf_cans[unbr][cans_idx2];
-                    if (up_grouped[cans_idx2]) continue;
-                    if (cans1.size() != cans2.size()) continue;
-                    same = true;
-                    for (ui com_idx = 0; com_idx < cans1.size(); com_idx++) {
-                        if (cans1[com_idx] != cans2[com_idx]) {
-                            same = false;
-                            break;
-                        }
-                    }
-                    if (same) {
-                        p_idxs[p_offset[p_cnt]++] = cans_idx2;
-                        up_grouped[cans_idx2] = true;
-                        up_group_num[cans_idx2] = p_cnt;
-                    }
-                }
-            }
-        }
-        c_idxs.swap(p_idxs);
-        c_offset.swap(p_offset);
-        c_cnt = p_cnt;
-    }
-
-    // down_indep, seperate down_cans(idxs)
-    auto& down_group_num = subInfo.subs.down_group_num;
-    auto& down_cans = subInfo.down_cans;
-    c_idxs.resize(down_cans.size());
-    p_idxs.resize(down_cans.size());
-    c_offset.resize(down_cans.size()+1);
-    p_offset.resize(down_cans.size()+1);
-    down_group_num.clear();
-    down_group_num.resize(down_cans.size(), 0);  // 0->no group
-    for (ui i = 0; i < down_cans.size(); i ++) c_idxs[i] = i;
-    c_cnt = 1;
-    c_offset[0] = 0; c_offset[1] = down_cans.size();
-    for (auto& unbr : down_indep) {
-        vector<bool> down_grouped(c_idxs.size(), false);
-        p_cnt = 0;
-        for (ui i = 0; i < c_cnt; i++) {
-            auto start = c_offset[i], end = c_offset[i+1];
-            // 1. put all vertices that have no influence on unbr to one group
-            p_cnt++;
-            p_offset[p_cnt] = p_offset[p_cnt-1];
-            for (auto idx1 = start; idx1 < end; idx1++) {
-                auto& cans_idx = c_idxs[idx1];
-                if (!influenced[unbr][cans_idx]) {
-                    p_idxs[p_offset[p_cnt]++] = cans_idx;
-                    down_grouped[cans_idx] = true;
-                    down_group_num[cans_idx] = p_cnt;
-                }
-            }
-            if (p_offset[p_cnt] == p_offset[p_cnt-1]) p_cnt--;
-            for (auto idx1 = start; idx1 < end; idx1++) {
-                auto& cans_idx1 = c_idxs[idx1];
-                if (down_grouped[cans_idx1]) continue;
-                p_cnt++;
-                p_offset[p_cnt] = p_offset[p_cnt-1];
-                p_idxs[p_offset[p_cnt]++] = cans_idx1;
-                auto& cans1 = inf_cans[unbr][cans_idx1];
-                down_grouped[cans_idx1] = true;
-                down_group_num[cans_idx1] = p_cnt;
-                for (auto idx2 = idx1 + 1; idx2 < end; idx2++) {
-                    auto& cans_idx2 = c_idxs[idx2];
-                    auto& cans2 = inf_cans[unbr][cans_idx2];
-                    if (down_grouped[cans_idx2]) continue;
-                    if (cans1.size() != cans2.size()) continue;
-                    same = true;
-                    for (ui com_idx = 0; com_idx < cans1.size(); com_idx++) {
-                        if (cans1[com_idx] != cans2[com_idx]) {
-                            same = false;
-                            break;
-                        }
-                    }
-                    if (same) {
-                        p_idxs[p_offset[p_cnt]++] = cans_idx2;
-                        down_grouped[cans_idx2] = true;
-                        down_group_num[cans_idx2] = p_cnt;
-                    }
-                }
-            }
-        }
-        c_idxs.swap(p_idxs);
-        c_offset.swap(p_offset);
-        c_cnt = p_cnt;
-    }
-    // after up_indep & down_indep info, compute edge info
-    if (subInfo.connected) {
-        comEdgeSubCon(index, depth);
-    } else {
-        comEdgeSubDis(index, depth);
-    }
-    return;
-}
-
-void
-EvaluateQuery::comEdgeSubCon(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& subs = subInfo.subs;
-    auto& up_cans = subInfo.up_cans;
-    auto& up2down = subInfo.up2down;     // down_cans of each up_can
-    auto& shared = subInfo.nbrs.shared_;
-    auto& grouped = subInfo.grouped;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& down_idxs = subInfo.down_idxs;
-    auto& up_group_num = subInfo.subs.up_group_num;
-    auto& down_group_num = subInfo.subs.down_group_num;
-
-    // compute sub by use 2 offset alternately
-    // c_* store the complete sub info, p_* store FiPE sub info
-    auto& c_cnt = subs.c_cnt;
-    auto& c_edge_up_offset = subs.edge_up_offset;
-    auto& c_edge_up_idxs = subs.edge_up_idxs;
-    auto& c_edge_down_offset = subs.edge_down_offset;
-    auto& c_edge_down_idxs = subs.edge_down_idxs;
-    auto& p_cnt = subs.p_cnt;
-    auto& p_edge_up_offset = subs.p_edge_up_offset;
-    auto& p_edge_up_idxs = subs.p_edge_up_idxs;
-    auto& p_edge_down_offset = subs.p_edge_down_offset;
-    auto& p_edge_down_idxs = subs.p_edge_down_idxs;
-    ui max_size = up2down.size() > up_cans.size() ? up2down.size() : up_cans.size();
-
-    // init edge_idxs
-    c_cnt = 1;
-    c_edge_up_offset.resize(max_size+2);
-    p_edge_up_offset.resize(max_size+2);
-    // c_edge_down_offset is initialized during edge building in comCurSpace
-    c_edge_down_offset.resize(max_size+2);
-    p_edge_down_offset.resize(max_size+2);
-    p_edge_up_idxs.resize(max_size);
-    c_edge_up_idxs.resize(max_size);
-    c_edge_down_idxs.resize(up2down.size());
-    p_edge_down_idxs.resize(up2down.size());
-    c_edge_up_offset[0] = 0; c_edge_up_offset[1] = up_cans.size();
-    for (ui i = 0; i < up_cans.size(); i++) c_edge_up_idxs[i] = i;
-    for (ui i = 0; i < up2down.size(); i++) c_edge_down_idxs[i] = i;
-    grouped.resize(up2down.size());
-    bool same;
-
-    for (auto& unbr : shared) {
-        fill(grouped.begin(), grouped.end(), false);
-        p_cnt = 0;
-        for (ui group_idx = 0; group_idx < c_cnt; group_idx++) {
-            // can not put all vertices that have no influence on unbr to one group
-            // because down_group_num maybe different
-            auto& up_start = c_edge_up_offset[group_idx];
-            auto& up_end = c_edge_up_offset[group_idx+1];
-            for (auto up_idx_idx1 = up_start; up_idx_idx1 < up_end; up_idx_idx1++) {
-                auto& up_idx1 = c_edge_up_idxs[up_idx_idx1];
-                auto& down_start1 = c_edge_down_offset[up_idx_idx1];
-                auto& down_end1 = c_edge_down_offset[up_idx_idx1+1];
-                for (auto down_idx_idx1 = down_start1; down_idx_idx1 < down_end1; down_idx_idx1++) {
-                    auto& edge_idx1 = c_edge_down_idxs[down_idx_idx1];
-                    if (grouped[edge_idx1]) continue;
-                    auto& down_idx1 = down_idxs[edge_idx1];
-                    auto& cans1 = inf_cans[unbr][edge_idx1];
-                    p_cnt++;
-                    p_edge_up_offset[p_cnt] = p_edge_up_offset[p_cnt-1];
-                    p_edge_up_idxs[p_edge_up_offset[p_cnt]++] = up_idx1;
-                    p_edge_down_offset[p_edge_up_offset[p_cnt]] = p_edge_down_offset[p_edge_up_offset[p_cnt] - 1];
-                    p_edge_down_idxs[p_edge_down_offset[p_edge_up_offset[p_cnt]]++] = edge_idx1;
-                    grouped[edge_idx1] = true;
-                    for (ui up_idx_idx2 = up_idx_idx1; up_idx_idx2 < up_end; up_idx_idx2++) {
-                        auto& up_idx2 = c_edge_up_idxs[up_idx_idx2];
-                        auto& down_start2 = c_edge_down_offset[up_idx_idx2];
-                        auto& down_end2 = c_edge_down_offset[up_idx_idx2+1];
-                        if (up_idx2 != p_edge_up_idxs[p_edge_up_offset[p_cnt]-1]) {
-                            p_edge_up_idxs[p_edge_up_offset[p_cnt]++] = up_idx2;
-                            p_edge_down_offset[p_edge_up_offset[p_cnt]] = p_edge_down_offset[p_edge_up_offset[p_cnt] - 1];
-                        }
-                        for (auto down_idx_idx2 = down_start2; down_idx_idx2 < down_end2; down_idx_idx2++) {
-                            auto& edge_idx2 = c_edge_down_idxs[down_idx_idx2];
-                            auto& down_idx2 = down_idxs[edge_idx2];
-                            if (grouped[edge_idx2]
-                                || down_group_num[down_idx1] != down_group_num[down_idx2]
-                                || up_group_num[up_idx1] != up_group_num[up_idx2]) continue;
-                            same = true;
-                            if (influenced[unbr][edge_idx2] || influenced[unbr][edge_idx1]) {
-                                auto& cans2 = inf_cans[unbr][edge_idx2];
-                                if (cans1.size() != cans2.size()) continue;
-                                for (ui com_idx = 0; com_idx < cans1.size(); com_idx++) {
-                                    if (cans1[com_idx] != cans2[com_idx]) {
-                                        same = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (same) {
-                                p_edge_down_idxs[p_edge_down_offset[p_edge_up_offset[p_cnt]]++] = edge_idx2;
-                                grouped[edge_idx2] = true;
-                            }
-                        }
-                        // if no edge is added for up_idx, edge_up_offset should not store this up_idx
-                        if (p_edge_down_offset[p_edge_up_offset[p_cnt]] == p_edge_down_offset[p_edge_up_offset[p_cnt] - 1])
-                            p_edge_up_offset[p_cnt]--;
-                    }
-                }
-            }
-        }
-        c_edge_up_idxs.swap(p_edge_up_idxs);
-        c_edge_up_offset.swap(p_edge_up_offset);
-        c_edge_down_idxs.swap(p_edge_down_idxs);
-        c_edge_down_offset.swap(p_edge_down_offset);
-        c_cnt = p_cnt;
-    }
-
-    if (shared.empty()) {
-        fill(grouped.begin(), grouped.end(), false);
-        p_cnt = 0;
-        for (ui group_idx = 0; group_idx < c_cnt; group_idx++) {
-            auto& up_start = c_edge_up_offset[group_idx];
-            auto& up_end = c_edge_up_offset[group_idx+1];
-            for (auto up_idx_idx1 = up_start; up_idx_idx1 < up_end; up_idx_idx1++) {
-                auto& up_idx1 = c_edge_up_idxs[up_idx_idx1];
-                auto& down_start1 = c_edge_down_offset[up_idx_idx1];
-                auto& down_end1 = c_edge_down_offset[up_idx_idx1+1];
-                for (auto down_idx_idx1 = down_start1; down_idx_idx1 < down_end1; down_idx_idx1++) {
-                    auto& edge_idx1 = c_edge_down_idxs[down_idx_idx1];
-                    if (grouped[edge_idx1]) continue;
-                    auto& down_idx1 = down_idxs[edge_idx1];
-                    p_cnt++;
-                    p_edge_up_offset[p_cnt] = p_edge_up_offset[p_cnt-1];
-                    p_edge_up_idxs[p_edge_up_offset[p_cnt]++] = up_idx1;
-                    p_edge_down_offset[p_edge_up_offset[p_cnt]] = p_edge_down_offset[p_edge_up_offset[p_cnt] - 1];
-                    p_edge_down_idxs[p_edge_down_offset[p_edge_up_offset[p_cnt]]++] = edge_idx1;
-                    grouped[edge_idx1] = true;
-                    for (ui up_idx_idx2 = up_idx_idx1; up_idx_idx2 < up_end; up_idx_idx2++) {
-                        auto& up_idx2 = c_edge_up_idxs[up_idx_idx2];
-                        auto& down_start2 = c_edge_down_offset[up_idx_idx2];
-                        auto& down_end2 = c_edge_down_offset[up_idx_idx2+1];
-                        if (up_idx2 != p_edge_up_idxs[p_edge_up_offset[p_cnt]-1]) {
-                            p_edge_up_idxs[p_edge_up_offset[p_cnt]++] = up_idx2;
-                            p_edge_down_offset[p_edge_up_offset[p_cnt]] = p_edge_down_offset[p_edge_up_offset[p_cnt] - 1];
-                        }
-                        for (auto down_idx_idx2 = down_start2; down_idx_idx2 < down_end2; down_idx_idx2++) {
-                            auto& edge_idx2 = c_edge_down_idxs[down_idx_idx2];
-                            auto& down_idx2 = down_idxs[edge_idx2];
-                            if (grouped[edge_idx2]
-                                || down_group_num[down_idx1] != down_group_num[down_idx2]
-                                || up_group_num[up_idx1] != up_group_num[up_idx2]) continue;
-                                p_edge_down_idxs[p_edge_down_offset[p_edge_up_offset[p_cnt]]++] = edge_idx2;
-                                grouped[edge_idx2] = true;
-                        }
-                        // if no edge is added for up_idx, edge_up_offset should not store this up_idx
-                        if (p_edge_down_offset[p_edge_up_offset[p_cnt]] == p_edge_down_offset[p_edge_up_offset[p_cnt] - 1])
-                            p_edge_up_offset[p_cnt]--;
-                    }
-                }
-            }
-        }
-        c_edge_up_idxs.swap(p_edge_up_idxs);
-        c_edge_up_offset.swap(p_edge_up_offset);
-        c_edge_down_idxs.swap(p_edge_down_idxs);
-        c_edge_down_offset.swap(p_edge_down_offset);
-        c_cnt = p_cnt;
-    }
-
-    return;
-}
-
-void
-EvaluateQuery::comEdgeSubDis(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& up_cans = subInfo.up_cans;
-    auto& down_cans = subInfo.down_cans;
-    auto& subs = subInfo.subs;
-    auto& shared = subInfo.nbrs.shared_;
-    auto& grouped = subInfo.grouped;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& edge_valid = subInfo.edge_valid;
-    auto& up_group_num = subInfo.subs.up_group_num;
-    auto& down_group_num = subInfo.subs.down_group_num;
-
-    // compute sub by use 2 offset alternately
-    // c_* store the complete sub info, p_* store FiPE sub info
-    auto& c_cnt = subs.c_cnt;
-    auto& c_edge_up_offset = subs.edge_up_offset;
-    auto& c_edge_up_idxs = subs.edge_up_idxs;
-    auto& c_edge_down_offset = subs.edge_down_offset;
-    auto& c_edge_down_idxs = subs.edge_down_idxs;
-    auto& p_cnt = subs.p_cnt;
-    auto& p_edge_down_offset = subs.p_edge_down_offset;
-    auto& p_edge_down_idxs = subs.p_edge_down_idxs;
-
-    // init edge_idxs
-    auto up_num = up_cans.size();
-    auto down_num = down_cans.size();
-    auto edge_num = up_num*down_num;
-    c_edge_down_offset.resize(edge_num+1);
-    p_edge_down_offset.resize(edge_num+1);
-    c_edge_down_idxs.resize(edge_num);
-    p_edge_down_idxs.resize(edge_num);
-    c_edge_down_offset[0] = 0, c_edge_down_offset[1] = edge_num;
-    for (ui i = 0; i < edge_num; i++) c_edge_down_idxs[i] = i;
-    grouped.resize(edge_num);
-    bool same;
-
-    // scanning edge, up_idx = edge_idx/down_cans.size(), down_idx = edge_idx%down_cans.size()
-    //               up = up_cans[up_idx], down = down_cans[down_idx]
-    for (auto& unbr : shared) {
-        p_cnt = 0;
-        fill(grouped.begin(), grouped.end(), false);
-        for (ui group_id = 0; group_id < c_cnt; group_id++) {
-            auto& edge_start = c_edge_down_offset[group_id];
-            auto& edge_end = c_edge_down_offset[group_id+1];
-            for (ui edge_idx_idx1 = edge_start; edge_idx_idx1 < edge_end; edge_idx_idx1++) {
-                auto& edge_idx1 = c_edge_down_idxs[edge_idx_idx1];
-                if (!edge_valid[edge_idx1] || grouped[edge_idx1]) continue;
-                auto up_idx1 = edge_idx1/down_num;
-                auto down_idx1 = edge_idx1%down_num;
-                p_cnt+=1;
-                p_edge_down_offset[p_cnt] = p_edge_down_offset[p_cnt - 1];
-                p_edge_down_idxs[p_edge_down_offset[p_cnt]++] = edge_idx1;
-                auto& cans1 = inf_cans[unbr][edge_idx1];
-                grouped[edge_idx1] = true;
-                for (ui edge_idx_idx2 = edge_idx_idx1 + 1; edge_idx_idx2 < edge_end; edge_idx_idx2++) {
-                    auto& edge_idx2 = c_edge_down_idxs[edge_idx_idx2];
-                    auto up_idx2 = edge_idx2/down_num;
-                    auto down_idx2 = edge_idx2%down_num;
-                    if (!edge_valid[edge_idx2] || grouped[edge_idx2]
-                        || up_group_num[up_idx1] != up_group_num[up_idx2]
-                        || down_group_num[down_idx1] != down_group_num[down_idx2]) continue;
-                    same = true;
-                    if (influenced[unbr][edge_idx2] || influenced[unbr][edge_idx1]) {
-                        auto& cans2 = inf_cans[unbr][edge_idx2];
-                        if (cans1.size() != cans2.size()) continue;
-                        for (ui com_idx = 0; com_idx < cans1.size(); com_idx++) {
-                            if (cans1[com_idx] != cans2[com_idx]) {
-                                same = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (same) {
-                        p_edge_down_idxs[p_edge_down_offset[p_cnt]++] = edge_idx2;
-                        grouped[edge_idx2] = true;
-                    }
-                }
-            }
-        }
-        c_edge_down_idxs.swap(p_edge_down_idxs);
-        c_edge_down_offset.swap(p_edge_down_offset);
-        c_cnt = p_cnt;
-    }
-
-    if (shared.empty()) {
-        p_cnt = 0;
-        fill(grouped.begin(), grouped.end(), false);
-        for (ui group_id = 0; group_id < c_cnt; group_id++) {
-            auto& edge_start = c_edge_down_offset[group_id];
-            auto& edge_end = c_edge_down_offset[group_id+1];
-            for (ui edge_idx_idx1 = edge_start; edge_idx_idx1 < edge_end; edge_idx_idx1++) {
-                auto& edge_idx1 = c_edge_down_idxs[edge_idx_idx1];
-                if (!edge_valid[edge_idx1] || grouped[edge_idx1]) continue;
-                auto up_idx1 = edge_idx1/down_num;
-                auto down_idx1 = edge_idx1%down_num;
-                p_cnt+=1;
-                p_edge_down_offset[p_cnt] = p_edge_down_offset[p_cnt - 1];
-                p_edge_down_idxs[p_edge_down_offset[p_cnt]++] = edge_idx1;
-                grouped[edge_idx1] = true;
-                for (ui edge_idx_idx2 = edge_idx_idx1 + 1; edge_idx_idx2 < edge_end; edge_idx_idx2++) {
-                    auto& edge_idx2 = c_edge_down_idxs[edge_idx_idx2];
-                    auto up_idx2 = edge_idx2/down_num;
-                    auto down_idx2 = edge_idx2%down_num;
-                    if (!edge_valid[edge_idx2] || grouped[edge_idx2]
-                        || up_group_num[up_idx1] != up_group_num[up_idx2]
-                        || down_group_num[down_idx1] != down_group_num[down_idx2]) continue;
-                        p_edge_down_idxs[p_edge_down_offset[p_cnt]++] = edge_idx2;
-                        grouped[edge_idx2] = true;
-                }
-            }
-        }
-        c_edge_down_idxs.swap(p_edge_down_idxs);
-        c_edge_down_offset.swap(p_edge_down_offset);
-        c_cnt = p_cnt;
-    }
-
-    return;
-}
-
-/**
- * compute valid_cans of all unbrs for start_vertex
- */
-bool
-EvaluateQuery::comStartCans(FiPEIndex& index) {
-    auto u = index.order_[0];
-    auto& subInfo = index.subInfo_[0];
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& up_cans = subInfo.up_cans;
-    auto& up_indep = subInfo.nbrs.up_indep_;
-    auto& cans = index.valid_cans_[u].back();
-    auto can_cnt = index.valid_cans_[u].back().size();
-    for (auto& unbr : up_indep) {
-        influenced[unbr].clear();
-        inf_cans[unbr].clear();
-        influenced[unbr].reserve(can_cnt);
-        inf_cans[unbr].reserve(can_cnt);
-    }
-    up_cans.clear();
-    up_cans.reserve(can_cnt);
-
-    // compute the valid_cans of all nbrs for each cans
-    ui unbrs_cnt;
-    auto unbrs = index.q_graph_->getVertexNeighbors(u, unbrs_cnt);
-    for (ui v_idx = 0; v_idx < can_cnt; v_idx++) {
-        auto& v = cans[v_idx];
-        bool valid = true;
-        ui edge_idx = v_idx;
-        if (index.subCans_[0].splitted) edge_idx += index.subCans_[0].cur_start;
-        for (ui i = 0; i < unbrs_cnt; i++) {
-            auto& unbr = unbrs[i];
-            // old valid_cans of unbr
-            auto& edges = *(index.index_[u][unbr].back());
-            auto vnbrs_cnt = edges.offset_[edge_idx + 1] - edges.offset_[edge_idx];
-            if (vnbrs_cnt == 0) {
-                valid = false;
-                break;
-            }
-        }
-        if (valid) {
-            up_cans.emplace_back(cans[v_idx]);
-            for (auto& unbr : up_indep) {
-                auto& edges = *(index.index_[u][unbr].back());
-                auto vnbrs_cnt = edges.offset_[edge_idx + 1] - edges.offset_[edge_idx];
-                auto vnbrs = edges.edge_ + edges.offset_[edge_idx];
-                influenced[unbr].emplace_back(true);  // can be removed for start_vertex
-                inf_cans[unbr].emplace_back(vnbrs, vnbrs+vnbrs_cnt);
-            }
-        }
-    }
-    return up_cans.size();  // 0->false, o.w.->true
-}
-
-/**
- * compute valid_cans for down_indep_ & shared_
- */
-bool
-EvaluateQuery::comCurSpace(FiPEIndex& index, ui depth) {
-    auto& up = index.order_[depth];
-    auto& down = index.order_[depth+1];
-    auto& subInfo = index.subInfo_[depth];
-    auto& up_cans = subInfo.up_cans;
-    auto& subs = subInfo.subs;
-    auto& edge_down_offset = subs.edge_down_offset;  // valid_cans range of each cans to nxt
-    auto& up2down = subInfo.up2down;       // valid_cans of nxt
-    auto& down_record = subInfo.subs.down_record;
-    bool success = true;
-
-    // 1.compute the valid_cans of shared for up
-    auto& up_shared_valid_cans = subInfo.up_shared_valid_cans;      // cans of [unbr][up_idx]
-    auto& shared = subInfo.nbrs.shared_;
-    ui up_valid_idx = 0;
-    for (auto& nbr : shared) {
-        up_shared_valid_cans[nbr].resize(up_cans.size());
-    }
-    for (ui v_idx = 0; v_idx < up_cans.size(); v_idx++, up_valid_idx++) {
-        up_cans[up_valid_idx] = up_cans[v_idx];
-        for (auto& unbr : shared) {
-            auto vnbrs = move(index.getNeighbors(up, unbr, up_cans[v_idx]));
-            if (vnbrs.size() == 0) {
-                up_valid_idx--;
-                break;
-            }
-            up_shared_valid_cans[unbr][up_valid_idx].swap(vnbrs);
-        }
-    }
-    if (up_valid_idx == 0) return false;
-    up_cans.resize(up_valid_idx);
-
-    // build edges
-    if (subInfo.connected) {
-        edge_down_offset.clear();
-        edge_down_offset.emplace_back(0);
-        up2down.clear();
-        for (auto& up_can : up_cans) {
-            auto vnbrs = move(index.getNeighbors(up, down, up_can));
-            edge_down_offset.emplace_back(edge_down_offset.back()+vnbrs.size());
-            up2down.insert(up2down.end(), move(vnbrs.begin()), move(vnbrs.end()));
-        }
-    }
-
-    // compute the down_cans
-    auto& down_cans = subInfo.down_cans;
-    if (subInfo.connected) {
-        down_cans.clear();
-        auto& down_idxs = subInfo.down_idxs;
-        down_idxs.resize(up2down.size());
-        for (ui i = 0; i < up2down.size(); i++) {
-            if (down_record[up2down[i]] == (ui)-1) {
-                down_record[up2down[i]] = down_cans.size();
-                down_cans.emplace_back(up2down[i]);
-            }
-            down_idxs[i] = down_record[up2down[i]];
-        }
-    } else {
-        down_cans = index.valid_cans_[down].back();
-    }
-
-    // compute valid_cans for down_indep & down_shared_valid_cans & delayed_nbrs
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& down_indep = subInfo.nbrs.down_indep_;
-    auto& delayed_nbrs = subInfo.nbrs.delayed_;
-    ui down_valid_idx = 0;
-    auto& down_valid = subInfo.down_valid;
-    auto& down_shared_valid_cans = subInfo.down_shared_valid_cans;
-    down_valid.clear();
-    down_valid.resize(down_cans.size(), true);
-    for (auto& nbr : down_indep) {
-        influenced[nbr].clear();
-        inf_cans[nbr].clear();
-        influenced[nbr].resize(down_cans.size());
-        inf_cans[nbr].resize(down_cans.size());
-    }
-    for (auto& nbr : shared) {
-        down_shared_valid_cans[nbr].resize(down_cans.size());
-    }
-    for (auto& nbr : delayed_nbrs) {
-        influenced[nbr].clear();
-        inf_cans[nbr].clear();
-        influenced[nbr].resize(down_cans.size());
-        inf_cans[nbr].resize(down_cans.size());
-    }
-    for (ui v_idx = 0; v_idx < down_cans.size(); v_idx++, down_valid_idx++) {
-        auto& v = down_cans[v_idx];
-        down_record[v] = down_valid_idx;
-        for (auto& unbr : down_indep) {
-            auto vnbrs = move(index.getNeighbors(down, unbr, v));
-            if (vnbrs.size() == 0) {
-                down_valid[v_idx] = false;
-                down_valid_idx--;
-                break;
-            }
-            if (index.valid_cans_[unbr].back().size() == vnbrs.size()) {
-                influenced[unbr][down_valid_idx] = false;
-                continue;  // means no changes
-            }
-
-            // write to down_valid_idx, down_cans will be shrinked at the end of this function
-            influenced[unbr][down_valid_idx] = true;
-            inf_cans[unbr][down_valid_idx].swap(vnbrs);
-        }
-        if (!down_valid[v_idx]) continue;
-        for (auto& unbr : shared) {
-            auto vnbrs = move(index.getNeighbors(down, unbr, v));
-            if (vnbrs.size() == 0) {
-                down_valid_idx--;
-                down_valid[v_idx] = false;
-                break;
-            }
-            down_shared_valid_cans[unbr][down_valid_idx].swap(vnbrs);
-        }
-        if (!down_valid[v_idx]) continue;
-        for (auto& unbr : delayed_nbrs) {
-            auto vnbrs = move(index.getNeighbors(down, unbr, v));
-            if (vnbrs.size() == 0) {
-                down_valid[v_idx] = false;
-                down_valid_idx--;
-                break;
-            }
-            if (index.valid_cans_[unbr].back().size() == vnbrs.size()) {
-                influenced[unbr][down_valid_idx] = false;
-                continue;  // means no changes
-            }
-
-            influenced[unbr][down_valid_idx] = true;
-            inf_cans[unbr][down_valid_idx].swap(vnbrs);
-        }
-    }
-    if (down_valid_idx != 0) {
-        // compute the valid_cans of shared for edges, based on down(up)_shared_valid_cans
-        if (subInfo.connected) {
-            success = comSharedCon(index, depth);
-        } else {
-            success = comSharedDis(index, depth);
-        }
-    } else {
-        success = false;
-    }
-
-    // recover down_record
-    ui valid_idx = 0;
-    for (ui v_idx = 0; v_idx < down_cans.size(); v_idx++) {
-        auto& down_can = down_cans[v_idx];
-        down_record[down_can] = (ui)-1;
-        if (down_valid[v_idx]) down_cans[valid_idx++] = down_can;
-    }
-    down_cans.resize(valid_idx);
-    return success;
-}
-
-inline bool
-EvaluateQuery::comSharedCon(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& up_cans = subInfo.up_cans;
-    auto& subs = subInfo.subs;
-    auto& edge_down_offset = subs.edge_down_offset;  // valid_cans range of each cans to nxt
-    auto& up2down = subInfo.up2down;                // valid_cans of nxt
-    // set group[idx] to true to jump the grouping of invalid edges
-    auto& shared = subInfo.nbrs.shared_;
-    auto& edge_valid = subInfo.edge_valid;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    edge_valid.clear();
-    edge_valid.resize(up2down.size(), true);
-    auto& down_valid = subInfo.down_valid;
-    auto& down_record = subInfo.subs.down_record;  // record v_idx to valid_down_cans
-    auto& up_shared_valid_cans = subInfo.up_shared_valid_cans;      // cans of [unbr][up_idx]
-    auto& down_shared_valid_cans = subInfo.down_shared_valid_cans;  // cans of [unbr][down_idx]
-    auto& down_idxs = subInfo.down_idxs;
-    auto& up_idxs = subInfo.up_idxs;
-    up_idxs.resize(down_idxs.size());
-
-    // reserve spaces for influenced
-    for (auto& nbr : shared) {
-        influenced[nbr].clear();
-        inf_cans[nbr].clear();
-        influenced[nbr].resize(up2down.size());
-        inf_cans[nbr].resize(up2down.size());
-    }
-
-    // compute shared_valid_cans,
-    // by the way, remove invalid down_cans & edges, update edge_down_offset, up2down, down_idxs
-    ui edge_valid_idx = 0;
-    auto valid_edge_down_offset = edge_down_offset;
-    for (ui up_idx = 0; up_idx < up_cans.size(); up_idx++) {
-        auto& edge_start = edge_down_offset[up_idx];
-        auto& edge_end = edge_down_offset[up_idx+1];
-        valid_edge_down_offset[up_idx+1] = valid_edge_down_offset[up_idx];
-        for (ui edge_idx = edge_start; edge_idx < edge_end; edge_idx++) {
-            auto& down = up2down[edge_idx];
-            auto& valid_down_can_idx = down_record[down];
-            auto& down_idx = down_idxs[edge_idx];
-            if (!down_valid[down_idx]) continue;
-            for (auto& nbr : shared) {
-                auto vnbrs = move(SetOp::intersectTwo(up_shared_valid_cans[nbr][up_idx],
-                                                      down_shared_valid_cans[nbr][valid_down_can_idx]));
-                if (vnbrs.size() == 0) {
-                    edge_valid[edge_idx] = false;
-                    break;
-                }
-                if (vnbrs.size() == index.valid_cans_[nbr].back().size()) {
-                    influenced[nbr][edge_valid_idx] = false;
-                    continue;
-                }
-                influenced[nbr][edge_valid_idx] = true;
-                inf_cans[nbr][edge_valid_idx].swap(vnbrs);
-            }
-            if (edge_valid[edge_idx]) {
-                edge_valid_idx++;
-                up2down[valid_edge_down_offset[up_idx+1]] = down;
-                down_idxs[valid_edge_down_offset[up_idx+1]] = valid_down_can_idx;
-                up_idxs[valid_edge_down_offset[up_idx+1]] = up_idx;
-                valid_edge_down_offset[up_idx+1]++;
-            }
-        }
-    }
-    edge_down_offset.swap(valid_edge_down_offset);
-    up2down.resize(edge_valid_idx);
-    return up2down.size();
-}
-
-inline bool
-EvaluateQuery::comSharedDis(FiPEIndex& index, ui depth) {
-    auto& subInfo = index.subInfo_[depth];
-    auto& up_cans = subInfo.up_cans;
-    auto& down_cans = subInfo.down_cans;
-    // set group[idx] to true to jump the grouping of invalid edges
-    auto& shared = subInfo.nbrs.shared_;
-    auto& edge_valid = subInfo.edge_valid;
-    auto& influenced = subInfo.influenced;
-    auto& inf_cans = subInfo.inf_cans;
-    auto& down_valid = subInfo.down_valid;
-    auto& up_valid_cans = subInfo.up_shared_valid_cans;      // cans of [unbr][up_idx]
-    auto& down_valid_cans = subInfo.down_shared_valid_cans;  // cans of [unbr][down_idx]
-    auto valid_down_cans = down_cans;
-    ui valid_idx = 0;
-    for (ui v_idx = 0; v_idx < down_cans.size(); v_idx++) {
-        auto& down_can = down_cans[v_idx];
-        if (down_valid[v_idx]) valid_down_cans[valid_idx++] = down_can;
-    }
-    valid_down_cans.resize(valid_idx);
-    auto edge_num = up_cans.size()*valid_down_cans.size();
-    edge_valid.clear();
-    edge_valid.resize(edge_num, true);
-    for (auto& nbr : shared) {
-        influenced[nbr].clear();
-        inf_cans[nbr].clear();
-        influenced[nbr].resize(edge_num);
-        inf_cans[nbr].resize(edge_num);
-    }
-
-    for (ui up_idx = 0; up_idx < up_cans.size(); up_idx++) {
-        for (ui down_idx = 0; down_idx < valid_down_cans.size(); down_idx++) {
-            auto edge_idx = up_idx*valid_down_cans.size() + down_idx;
-            for (auto& nbr : shared) {
-                auto vnbrs = move(SetOp::intersectTwo(up_valid_cans[nbr][up_idx], down_valid_cans[nbr][down_idx]));
-                if (vnbrs.size() == 0) {
-                    edge_valid[edge_idx] = false;
-                    break;
-                }
-                if (vnbrs.size() == index.valid_cans_[nbr].back().size()) {
-                    influenced[nbr][edge_idx] = false;
-                    continue;
-                }
-                influenced[nbr][edge_idx] = true;
-                inf_cans[nbr][edge_idx].swap(vnbrs);
-            }
-        }
-    }
-    return true;
 }

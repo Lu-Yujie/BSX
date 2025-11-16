@@ -1,6 +1,6 @@
 From b8ae44ff3d4992b3999df7b75de20f4a85e71bf5 Mon Sep 17 00:00:00 2001
-From:  xxx.email
-Date: xxx
+From: Yujie Lu <lu__yujie@163.com>
+Date: Sat, 20 Apr 2024 16:11:49 +0800
 Subject: [PATCH] Adjust source VEQ to adapt framework
 
 * rewrite ReadIgraphFormat

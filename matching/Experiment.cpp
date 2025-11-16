@@ -146,6 +146,8 @@ int main(int argc, char** argv) {
     TreeNode* dpiso_tree = NULL;
     TreeNode* veq_tree = NULL;
     ui* veq_order = NULL;
+    TreeNode* ceci_tree = NULL;
+    ui* ceci_order = NULL;
     catalog* storage = NULL;
     vector<unordered_map<VertexID, vector<VertexID >>> TE_Candidates;
     vector<vector<unordered_map<VertexID, vector<VertexID>>>> NTE_Candidates;
@@ -156,6 +158,8 @@ int main(int argc, char** argv) {
     ui* pivots = NULL;
     ui** weight_array = NULL;
 
+    // engine variables
+    uint64_t valid_vtx_count = 0;
     /************************************ end variables ******************************************/
 
     
@@ -182,6 +186,9 @@ int main(int argc, char** argv) {
     } else if (filter_type == "VEQ") {
         FilterVertices::VEQFilter(data_graph, query_graph, candidates, candidates_count, veq_order,
                                   veq_tree, end_time);
+    } else if (filter_type == "CECI") {
+        FilterVertices::CECIFilter(data_graph, query_graph, candidates, candidates_count, ceci_order,
+                                   ceci_tree, TE_Candidates, NTE_Candidates, end_time);
     } else if (filter_type == "RM") {
         FilterVertices::RMFilter(data_graph, query_graph, candidates, candidates_count, storage, end_time);
     } else if (filter_type == "CaLiG") {
@@ -200,13 +207,13 @@ int main(int argc, char** argv) {
 
     // build edge matrix (index)
     start = chrono::high_resolution_clock::now();
-    if (filter_type != "null") {
+    if (filter_type != "CECI" && filter_type != "null") { // indices of CECI don't have no-tree edges
         FilterVertices::sortCandidates(candidates, candidates_count, query_graph->getVerticesCount());
         edge_matrix = new Edges **[query_graph->getVerticesCount()];
         for (ui i = 0; i < query_graph->getVerticesCount(); ++i) {
             edge_matrix[i] = new Edges *[query_graph->getVerticesCount()];
         }
-        if (engine_type != "BSX" && engine_type != "FiPE") {
+        if (engine_type != "BSX") {
             BuildEdgeIndex::buildCansIdxIndex(data_graph, query_graph, candidates, candidates_count, edge_matrix);
         } else {
             BuildEdgeIndex::buildCansIndex(data_graph, query_graph, candidates, candidates_count, edge_matrix);
@@ -218,8 +225,23 @@ int main(int argc, char** argv) {
     std::cout << "------------" << endl;
     std::cout << "Generate a matching order..." << endl;
     start = chrono::high_resolution_clock::now();
-    if (order_type == "GQL") {
+    if (order_type == "QSI") {
+        GenerateQueryPlan::generateQSIQueryPlan(data_graph, query_graph, edge_matrix, matching_order, pivots);
+    } else if (order_type == "GQL") {
         GenerateQueryPlan::generateGQLQueryPlan(data_graph, query_graph, candidates_count, matching_order, pivots);
+    } else if (order_type == "TSO") {
+        if (tso_tree == NULL) {
+            GenerateFilteringPlan::generateTSOFilterPlan(data_graph, query_graph, tso_tree, tso_order);
+        }
+        GenerateQueryPlan::generateTSOQueryPlan(query_graph, edge_matrix, matching_order, pivots, tso_tree, tso_order);
+    } else if (order_type == "CFL") {
+        if (cfl_tree == NULL) {
+            int level_count;
+            ui* level_offset;
+            GenerateFilteringPlan::generateCFLFilterPlan(data_graph, query_graph, cfl_tree, cfl_order, level_count, level_offset);
+            delete[] level_offset;
+        }
+        GenerateQueryPlan::generateCFLQueryPlan(data_graph, query_graph, edge_matrix, matching_order, pivots, cfl_tree, cfl_order, candidates_count);
     } else if (order_type == "DPiso") {
         if (dpiso_tree == NULL) {
             GenerateFilteringPlan::generateDPisoFilterPlan(data_graph, query_graph, dpiso_tree, dpiso_order);
@@ -227,6 +249,14 @@ int main(int argc, char** argv) {
 
         GenerateQueryPlan::generateDSPisoQueryPlan(query_graph, edge_matrix, matching_order, pivots, dpiso_tree, dpiso_order,
                                                     candidates_count, weight_array);
+    } else if (order_type == "CECI") {
+        GenerateQueryPlan::generateCECIQueryPlan(query_graph, ceci_tree, ceci_order, matching_order, pivots);
+    } else if (order_type == "RI") {
+        GenerateQueryPlan::generateRIQueryPlan(data_graph, query_graph, matching_order, pivots);
+    } else if (order_type == "VF2PP") {
+        GenerateQueryPlan::generateVF2PPQueryPlan(data_graph, query_graph, matching_order, pivots);
+    } else if (order_type == "VF3") {
+        GenerateQueryPlan::generateVF3QueryPlan(data_graph, query_graph, matching_order, pivots);
     } else if (order_type == "RM") {
         GenerateQueryPlan::generateRMQueryPlan(query_graph, matching_order, edge_matrix, pivots);
     } else if (order_type == "null") {
@@ -246,9 +276,34 @@ int main(int argc, char** argv) {
     std::cout << "------------" << endl;
     std::cout << "Enumerate..." << endl;
     start = chrono::high_resolution_clock::now();
-    if (engine_type == "BS1") {
-        overtime = EvaluateQuery::BS1Engine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
+    if (engine_type == "EXPLORE") {
+        overtime = EvaluateQuery::ExploreEngine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
                                                matching_order, pivots, output_limit, call_cnt, embedding_cnt, end_time);
+    } else if (engine_type == "LFTJ") {
+        overtime = EvaluateQuery::LFTJ(data_graph, query_graph, edge_matrix, candidates, candidates_count,
+                                       matching_order, output_limit, call_cnt, valid_vtx_count, embedding_cnt, end_time);
+    } else if (engine_type == "GQL") {
+        overtime = EvaluateQuery::GQLEngine(data_graph, query_graph, candidates, candidates_count,matching_order,
+                                                      output_limit, call_cnt, embedding_cnt, end_time);
+    } else if (engine_type == "QSI") {
+        overtime = EvaluateQuery::QSIEngine(data_graph, query_graph, candidates, candidates_count, matching_order,
+                                                      pivots, output_limit, call_cnt, embedding_cnt, end_time);
+    } else if (engine_type == "VF3") {
+        overtime = EvaluateQuery::VF3Engine(data_graph, query_graph, matching_order, pivots, output_limit, call_cnt,
+                                                  embedding_cnt, end_time);
+    } else if (engine_type == "VEQ") {
+        if (veq_tree == NULL) {
+            GenerateFilteringPlan::generateDPisoFilterPlan(data_graph, query_graph, veq_tree, veq_order);
+        }
+        overtime = EvaluateQuery::VEQEngine(data_graph, query_graph, veq_tree, edge_matrix, candidates, candidates_count,
+                                                  output_limit, call_cnt, embedding_cnt, end_time);
+    } else if (engine_type == "DPiso") {
+        overtime = EvaluateQuery::DPisoEngine(data_graph, query_graph, dpiso_tree, edge_matrix, candidates,
+                                                    candidates_count, weight_array, dpiso_order, output_limit, call_cnt,
+                                                    embedding_cnt, end_time);
+    } else if (engine_type == "CECI") {
+        overtime = EvaluateQuery::CECIEngine(data_graph, query_graph, ceci_tree, candidates, candidates_count, TE_Candidates,
+                                                   NTE_Candidates, ceci_order, output_limit, call_cnt, embedding_cnt, end_time);
     } else if (engine_type == "RM") {
         overtime = EvaluateQuery::RMEngine(query_graph, data_graph, storage, edge_matrix, candidates, candidates_count,
                                                         matching_order, output_limit, call_cnt, embedding_cnt, end_time);
@@ -258,9 +313,6 @@ int main(int argc, char** argv) {
     } else if (engine_type == "BSX") {
         overtime = EvaluateQuery::BSXEngine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
                                              output_limit, call_cnt, embedding_cnt, end_time);
-    } else if (engine_type == "FiPE") {
-        overtime = EvaluateQuery::FiPEEngine(data_graph, query_graph, edge_matrix, candidates, candidates_count,
-                                                output_limit, call_cnt, embedding_cnt, end_time);
     } else {
         std::cout << "The specified engine type '" << engine_type << "' is not supported." << endl;
     }
@@ -278,6 +330,8 @@ int main(int argc, char** argv) {
     delete[] cfl_tree;
     delete[] dpiso_order;
     delete[] dpiso_tree;
+    delete[] ceci_order;
+    delete[] ceci_tree;
     delete[] matching_order;
     delete[] pivots;
     delete storage;
@@ -320,9 +374,6 @@ int main(int argc, char** argv) {
     delete query_graph;
     delete data_graph;
     mpz_clear(embedding_cnt);
-#ifdef ANALYZE_MEMORY
-    output << "max_memory: " << mem::getVmPeak()  << " KB" << endl;
-#endif
     output << "end" << endl;
     
     output.close();

@@ -1453,7 +1453,7 @@ struct TokenHelper {
     }
 };
 
-// FiPE specialized version for char to prevent buffer copying.
+// Partial specialized version for char to prevent buffer copying.
 template <typename Stack>
 struct TokenHelper<Stack, char> {
     CEREAL_RAPIDJSON_FORCEINLINE static void AppendIndexToken(Stack& documentStack, SizeType index) {

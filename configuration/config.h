@@ -40,19 +40,22 @@
 #define ENABLE_FAILING_SET
 
 /**
- * Define ANALYZE_MEMORY to analyze memory consumption
+ * Define BSX_REFINE_RATIO to enable dynamic refinement technique
+ * The impact will only propagate when the #cans for point u changes by more than (REFINE_RATIO)%
+ * 0->complete convergence, 100->just check nbrs
+ * note: update one vertex at most once in one refinement
  */
-// #define ANALYZE_MEMORY
+#define BSX_REFINE_RATIO 50
 
 /**
- * Define FIPE_HOMOMORPHISM to analyze memory consumption
+ * Define ENABLE_EQUIVALENT_SET to enable the equivalent set pruning technique in VEQ
  */
-#define FIPE_HOMOMORPHISM
+#define ENABLE_EQUIVALENT_SET
 
 /**
- * Define minimal subset of candidates for backtracking
+ * Define PART_SEP_KIND to choose diff seperation methods.
  */
-#define MIN_SUBCANS 16
+#define PART_SEP_KIND 1
 
 #define PRINT_SEPARATOR "------------------------------"
 

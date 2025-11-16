@@ -1,7 +1,8 @@
 
 #include "nop_join.h"
-#include "timeOp.h"
 #include <utility>
+
+
 
     bool nop_join::execute(size_t& call_cnt, size_t& embedding_cnt, int64_t& time_limit) {
         uint64_t size_l = left_->get_size();
@@ -96,7 +97,7 @@
             hash_table::bucket& bucket = table.arr[index];
 
             call_cnt += bucket.count;
-            if (TimeOp::getClockNan() >= time_limit) {
+            if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                 return true;
             }
 
