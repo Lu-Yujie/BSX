@@ -1,3 +1,7 @@
+//
+// Created by Shixuan Sun on 2018/6/29.
+//
+
 #ifndef SUBGRAPHMATCHING_MATCHINGCOMMAND_H
 #define SUBGRAPHMATCHING_MATCHINGCOMMAND_H
 
@@ -5,13 +9,22 @@
 #include <map>
 #include <iostream>
 enum OptionKeyword {
-    QueryGraphFile,             // -q, The query graph file path, compulsive parameter
-    DataGraphFile,              // -d, The data graph file path, compulsive parameter
-    MaxOutputEmbeddingNum,      // -num, The maximum output embedding num
-    TimeLimit,                  // -time_limit, millisecond
-    OutputFile,                 // -o, output file path(absolute)
-    ConfPath                    // -conf, configuration file path(absolute) 
-    };
+    Algorithm = 0,          // -a, The algorithm name, compulsive parameter
+    QueryGraphFile = 1,     // -q, The query graph file path, compulsive parameter
+    DataGraphFile = 2,      // -d, The data graph file path, compulsive parameter
+    ThreadCount = 3,        // -n, The number of thread, optional parameter
+    DepthThreshold = 4,     // -d0,The threshold to control the depth for splitting task, optional parameter
+    WidthThreshold = 5,     // -w0,The threshold to control the width for splitting task, optional parameter
+    IndexType = 6,          // -i, The type of index, vertex centric or edge centric
+    Filter = 7,             // -filter, The strategy of filtering
+    Order = 8,              // -order, The strategy of ordering
+    Engine = 9,             // -engine, The computation engine
+    MaxOutputEmbeddingNum = 10, // -num, The maximum output embedding num
+    ExeTimeLimit = 11, // -time_limit, The time limit for executing a query in seconds
+    CSRFilePath = 14,                   // -csr, The input csr file path
+    OutputFile = 15,                    // -o, output file path(absolute)
+    ConfPath = 16                       // -conf, configuration file path(absolute) 
+};
 
 class MatchingCommand : public CommandParser{
 private:
@@ -32,12 +45,47 @@ public:
         return options_value[OptionKeyword::QueryGraphFile];
     }
 
+    std::string getAlgorithm() {
+        return options_value[OptionKeyword::Algorithm];
+    }
+
+    std::string getIndexType() {
+        return options_value[OptionKeyword::IndexType] == "" ? "VertexCentric" : options_value[OptionKeyword::IndexType];
+    }
+    std::string getThreadCount() {
+        return options_value[OptionKeyword::ThreadCount] == "" ? "1" : options_value[OptionKeyword::ThreadCount];
+    }
+
+    std::string getDepthThreshold() {
+        return options_value[OptionKeyword::DepthThreshold] == "" ? "0" : options_value[OptionKeyword::DepthThreshold];
+    }
+
+    std::string getWidthThreshold() {
+        return options_value[OptionKeyword::WidthThreshold] == "" ? "1" : options_value[OptionKeyword::WidthThreshold];
+    }
+
+    std::string getFilterType() {
+        return options_value[OptionKeyword::Filter] == "" ? "CFL" : options_value[OptionKeyword::Filter];
+    }
+
+    std::string getOrderType() {
+        return options_value[OptionKeyword::Order] == "" ? "GQL" : options_value[OptionKeyword::Order];
+    }
+
+    std::string getEngineType() {
+        return options_value[OptionKeyword::Engine] == "" ? "LFTJ" : options_value[OptionKeyword::Engine];
+    }
+
     std::string getMaximumEmbeddingNum() {
         return options_value[OptionKeyword::MaxOutputEmbeddingNum] == "" ? "MAX" : options_value[OptionKeyword::MaxOutputEmbeddingNum];
     }
 
     std::string getTimeLimit() {
-        return options_value[OptionKeyword::TimeLimit] == "" ? "1" : options_value[OptionKeyword::TimeLimit];
+        return options_value[OptionKeyword::ExeTimeLimit] == "" ? "900" : options_value[OptionKeyword::ExeTimeLimit];
+    }
+
+    std::string getCSRFilePath() {
+        return options_value[OptionKeyword::CSRFilePath] == "" ? "" : options_value[OptionKeyword::CSRFilePath];
     }
 
     std::string getOutputFile() {

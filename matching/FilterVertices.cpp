@@ -7,9 +7,9 @@
 #include "rapidMatch/primitive/semi_join.h"
 #include "rapidMatch/primitive/projection.h"
 #include "bi_matching/bigraphMatching.h"
-#include "timeOp.h"
 #include <vector>
 #include <algorithm>
+#define INVALID_VERTEX_ID 4000000000
 
 /**
  * label and degree filtering
@@ -21,7 +21,7 @@ FilterVertices::LDFFilter(const Graph *data_graph, const Graph *query_graph, ui 
     allocateBuffer(data_graph, query_graph, candidates, candidates_count);
 
     for (ui i = 0; i < query_graph->getVerticesCount(); ++i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             return true;
         }
         LabelID label = query_graph->getVertexLabel(i);
@@ -55,7 +55,7 @@ FilterVertices::NLFFilter(const Graph *data_graph, const Graph *query_graph, ui 
     allocateBuffer(data_graph, query_graph, candidates, candidates_count);
 
     for (ui i = 0; i < query_graph->getVerticesCount(); ++i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             return true;
         }
         VertexID query_vertex = i;
@@ -70,6 +70,14 @@ FilterVertices::NLFFilter(const Graph *data_graph, const Graph *query_graph, ui 
     return false;
 }
 
+// 分为两步:
+//     1.local pruning: 好像其实就是NLF,原文叫:根据当前点在查询图的一步子图,数据图上找一个
+//        相匹配的子图（label和邻居label一致）,当然如果步长变了,就不只是邻居了
+//     2.global refine: 在上一步生成的candidate中,进行邻居的进一步匹配,要求u在查询图上邻居
+//        与candidate中点v在数据图上的邻居,存在单射,且u的邻居集为满射的关系
+//       （semi-perfect match）
+//        或者说,数据图点v的邻居必须在查询图点u的邻居的candidate中
+//        不对,这里不是单射关系哦,
 bool
 FilterVertices::GQLFilter(const Graph *data_graph, const Graph *query_graph, ui **&candidates,
                           ui *&candidates_count, int64_t& time_limit) {
@@ -111,7 +119,7 @@ FilterVertices::GQLFilter(const Graph *data_graph, const Graph *query_graph, ui 
     bool overtime = false;
     for (ui l = 0; l < 2; ++l) {
         for (ui i = 0; i < q_num; ++i) {
-            if (TimeOp::getClockNan() >= time_limit) {
+            if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                 overtime = true;
                 goto EXIT;
             }
@@ -119,19 +127,20 @@ FilterVertices::GQLFilter(const Graph *data_graph, const Graph *query_graph, ui 
             for (ui j = 0; j < candidates_count[query_vertex]; ++j) {
                 VertexID data_vertex = candidates[query_vertex][j];
 
-                if (data_vertex == (ui)-1)
+                if (data_vertex == INVALID_VERTEX_ID)
                     continue;
 
                 if (!verifyExactTwigIso(data_graph, query_graph, data_vertex, query_vertex, valid_candidates,
                                         left_to_right_offset, left_to_right_edges, left_to_right_match,
                                         right_to_left_match, match_visited, match_queue, match_previous)) {
-                    candidates[query_vertex][j] = (ui)-1;
+                    candidates[query_vertex][j] = INVALID_VERTEX_ID;
                     valid_candidates[query_vertex][data_vertex] = false;
                 }
             }
         }
     }
 
+    // Compact candidates. 删除global refinemnt中标记出的不符合要求的点
     compactCandidates(candidates, candidates_count, q_num);
 
     // Release memory.
@@ -151,6 +160,7 @@ FilterVertices::GQLFilter(const Graph *data_graph, const Graph *query_graph, ui 
     return overtime;
 }
 
+// 20年的综述上没有讲,所以先跳过吧,之后对着论文读一下
 bool
 FilterVertices::TSOFilter(const Graph *data_graph, const Graph *query_graph, ui **&candidates,
                           ui *&candidates_count, ui *&order, TreeNode *&tree, int64_t& time_limit) {
@@ -170,7 +180,7 @@ FilterVertices::TSOFilter(const Graph *data_graph, const Graph *query_graph, ui 
     bool overtime = false;
 
     for (ui i = 1; i < q_num; ++i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -181,7 +191,7 @@ FilterVertices::TSOFilter(const Graph *data_graph, const Graph *query_graph, ui 
     }
 
     for (int i = q_num - 1; i >= 0; --i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -201,6 +211,7 @@ FilterVertices::TSOFilter(const Graph *data_graph, const Graph *query_graph, ui 
     return overtime;
 }
 
+// 
 bool
 FilterVertices::CFLFilter(const Graph *data_graph, const Graph *query_graph, ui **&candidates,
                           ui *&candidates_count, ui *&order, TreeNode *&tree, int64_t& time_limit) {
@@ -221,7 +232,7 @@ FilterVertices::CFLFilter(const Graph *data_graph, const Graph *query_graph, ui 
 
     // Top-down generation.
     for (int i = 1; i < level_count; ++i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -229,6 +240,8 @@ FilterVertices::CFLFilter(const Graph *data_graph, const Graph *query_graph, ui 
         for (ui j = level_offset[i]; j < level_offset[i + 1]; ++j) {
             VertexID query_vertex = order[j];
             TreeNode& node = tree[query_vertex];
+            // 这里的prune方法是文章中filtering rule 3.1所写的方法
+            // 数据图上点的邻居应该在查询图上点的邻居的候选中出现
             generateCandidates(data_graph, query_graph, query_vertex, node.bn_, node.bn_count_,
                                candidates, candidates_count, flag, updated_flag);
         }
@@ -247,7 +260,7 @@ FilterVertices::CFLFilter(const Graph *data_graph, const Graph *query_graph, ui 
 
     // Bottom-up refinement.
     for (int i = level_count - 2; i >= 0; --i) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -290,7 +303,7 @@ FilterVertices::DPisoFilter(const Graph *data_graph, const Graph *query_graph, u
     for (ui k = 0; k < 3; ++k) {
         if (k % 2 == 0) {
             for (ui i = 1; i < q_num; ++i) {
-                if (TimeOp::getClockNan() >= time_limit) {
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     overtime = true;
                     goto EXIT;
                 }
@@ -302,7 +315,7 @@ FilterVertices::DPisoFilter(const Graph *data_graph, const Graph *query_graph, u
         }
         else {
             for (int i = q_num - 2; i >= 0; --i) {
-                if (TimeOp::getClockNan() >= time_limit) {
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     overtime = true;
                     goto EXIT;
                 }
@@ -323,16 +336,453 @@ FilterVertices::DPisoFilter(const Graph *data_graph, const Graph *query_graph, u
 }
 
 bool
+FilterVertices::CECIFilter(const Graph *data_graph, const Graph *query_graph, ui **&candidates,
+                           ui *&candidates_count, ui *&order, TreeNode *&tree,
+                           std::vector<std::unordered_map<VertexID,
+                                                          std::vector<VertexID >>> &TE_Candidates,
+                           std::vector<std::vector<std::unordered_map<VertexID,
+                                                                      std::vector<VertexID>>>> &NTE_Candidates,
+                           int64_t& time_limit) {
+    GenerateFilteringPlan::generateCECIFilterPlan(data_graph, query_graph, tree, order);
+
+    allocateBuffer(data_graph, query_graph, candidates, candidates_count);
+
+    ui query_vertices_count = query_graph->getVerticesCount();
+    ui data_vertices_count = data_graph->getVerticesCount();
+    // Find the pivots.
+    VertexID root = order[0];
+    computeCandidateWithNLF(data_graph, query_graph, root, candidates_count[root], candidates[root]);
+
+    if (candidates_count[root] == 0)
+        return false;
+
+    // TE_Candidates construction and filtering.
+    std::vector<ui> updated_flag(data_vertices_count);
+    std::vector<ui> flag(data_vertices_count);
+    std::fill(flag.begin(), flag.end(), 0);
+    std::vector<bool> visited_query_vertex(query_vertices_count);
+    std::fill(visited_query_vertex.begin(), visited_query_vertex.end(), false);
+
+    visited_query_vertex[root] = true;
+
+    TE_Candidates.resize(query_vertices_count);
+
+    for (ui i = 1; i < query_vertices_count; ++i) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
+            return true;
+        }
+        VertexID u = order[i];
+        VertexID u_p = tree[u].parent_;
+
+        ui u_label = query_graph->getVertexLabel(u);
+        ui u_degree = query_graph->getVertexDegree(u);
+#if OPTIMIZED_VLABELED_GRAPH == 1
+        auto u_nlf = query_graph->getVertexNLF(u);
+#endif
+        candidates_count[u] = 0;
+
+        visited_query_vertex[u] = true;
+        VertexID* frontiers = candidates[u_p];
+        ui frontiers_count = candidates_count[u_p];
+
+        for (ui j = 0; j < frontiers_count; ++j) {
+            VertexID v_f = frontiers[j];
+
+            if (v_f == INVALID_VERTEX_ID)
+                continue;
+
+            ui nbrs_cnt;
+            const VertexID* nbrs = data_graph->getVertexNeighbors(v_f, nbrs_cnt);
+
+            auto iter_pair = TE_Candidates[u].emplace(v_f, std::vector<VertexID>());
+            for (ui k = 0; k < nbrs_cnt; ++k) {
+                VertexID v = nbrs[k];
+
+                if (data_graph->getVertexLabel(v) == u_label && data_graph->getVertexDegree(v) >= u_degree) {
+
+                    // NLF check
+#if OPTIMIZED_VLABELED_GRAPH == 1
+                    auto v_nlf = data_graph->getVertexNLF(v);
+                    if (v_nlf->size() >= u_nlf->size()) {
+                        bool is_valid = true;
+
+#ifdef ELABELED_GRAPH
+                        for (auto& velement : *u_nlf) {
+                            auto viter = v_nlf->find(velement.first);
+                            if (viter == v_nlf->end() || viter->second.size() < velement.second.size()) {
+                                is_valid = false;
+                                break;
+                            }
+                            for (auto& eelement : velement.second) {
+                                auto eiter = viter->second.find(eelement.first);
+                                if (eiter == viter->second.end() || eiter->second < eelement.second) {
+                                    is_valid = false;
+                                    break;
+                                }
+                            }
+                            if (is_valid == false)
+                                break;
+                        }
+#else
+                        for (auto element : *u_nlf) {
+                            auto iter = v_nlf->find(element.first);
+                            if (iter == v_nlf->end() || iter->second < element.second) {
+                                is_valid = false;
+                                break;
+                            }
+                        }
+#endif
+
+                        if (is_valid) {
+                            iter_pair.first->second.push_back(v);
+                            if (flag[v] == 0) {
+                                flag[v] = 1;
+                                candidates[u][candidates_count[u]++] = v;
+                            }
+                        }
+                    }
+#else
+                    iter_pair.first->second.push_back(v);
+                    if (flag[v] == 0) {
+                        flag[v] = 1;
+                        candidates[u][candidates_count[u]++] = v;
+                    }
+#endif
+                }
+            }
+
+            if (iter_pair.first->second.empty()) {
+                frontiers[j] = INVALID_VERTEX_ID;
+                for (ui k = 0; k < tree[u_p].children_count_; ++k) {
+                    VertexID u_c = tree[u_p].children_[k];
+                    if (visited_query_vertex[u_c]) {
+                        TE_Candidates[u_c].erase(v_f);
+                    }
+                }
+            }
+        }
+
+        if (candidates_count[u] == 0)
+            return false;
+
+        for (ui j = 0; j < candidates_count[u]; ++j) {
+            VertexID v = candidates[u][j];
+            flag[v] = 0;
+        }
+    }
+
+    // NTE_Candidates construction and filtering.
+    NTE_Candidates.resize(query_vertices_count);
+    for (auto& value : NTE_Candidates) {
+        value.resize(query_vertices_count);
+    }
+
+    for (ui i = 1; i < query_vertices_count; ++i) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
+            return true;
+        }
+        VertexID u = order[i];
+        TreeNode &u_node = tree[u];
+
+        ui u_label = query_graph->getVertexLabel(u);
+        ui u_degree = query_graph->getVertexDegree(u);
+#if OPTIMIZED_VLABELED_GRAPH == 1
+        auto u_nlf = query_graph->getVertexNLF(u);
+#endif
+        for (ui l = 0; l < u_node.bn_count_; ++l) {
+            VertexID u_p = u_node.bn_[l];
+            VertexID *frontiers = candidates[u_p];
+            ui frontiers_count = candidates_count[u_p];
+
+            for (ui j = 0; j < frontiers_count; ++j) {
+                VertexID v_f = frontiers[j];
+
+                if (v_f == INVALID_VERTEX_ID)
+                    continue;
+
+                ui nbrs_cnt;
+                const VertexID *nbrs = data_graph->getVertexNeighbors(v_f, nbrs_cnt);
+
+                auto iter_pair = NTE_Candidates[u][u_p].emplace(v_f, std::vector<VertexID>());
+                for (ui k = 0; k < nbrs_cnt; ++k) {
+                    VertexID v = nbrs[k];
+
+                    if (data_graph->getVertexLabel(v) == u_label && data_graph->getVertexDegree(v) >= u_degree) {
+
+                        // NLF check
+#if OPTIMIZED_VLABELED_GRAPH == 1
+                        auto v_nlf = data_graph->getVertexNLF(v);
+                        if (v_nlf->size() >= u_nlf->size()) {
+                            bool is_valid = true;
+
+#ifdef ELABELED_GRAPH
+                            for (auto& velement : *u_nlf) {
+                                auto viter = v_nlf->find(velement.first);
+                                if (viter == v_nlf->end() || viter->second.size() < velement.second.size()) {
+                                    is_valid = false;
+                                    break;
+                                }
+                                for (auto& eelement : velement.second) {
+                                    auto eiter = viter->second.find(eelement.first);
+                                    if (eiter == viter->second.end() || eiter->second < eelement.second) {
+                                        is_valid = false;
+                                        break;
+                                    }
+                                }
+                                if (is_valid == false)
+                                    break;
+                            }
+#else
+                            for (auto element : *u_nlf) {
+                                auto iter = v_nlf->find(element.first);
+                                if (iter == v_nlf->end() || iter->second < element.second) {
+                                    is_valid = false;
+                                    break;
+                                }
+                            }
+#endif
+
+
+                            if (is_valid) {
+                                iter_pair.first->second.push_back(v);
+                            }
+                        }
+#else
+                        iter_pair.first->second.push_back(v);
+#endif
+                    }
+                }
+
+                if (iter_pair.first->second.empty()) {
+                    frontiers[j] = INVALID_VERTEX_ID;
+                    for (ui k = 0; k < tree[u_p].children_count_; ++k) {
+                        VertexID u_c = tree[u_p].children_[k];
+                        TE_Candidates[u_c].erase(v_f);
+                    }
+                }
+            }
+        }
+    }
+
+    // Reverse BFS refine.
+    std::vector<std::vector<ui>> cardinality(query_vertices_count);
+    for (ui i = 0; i < query_vertices_count; ++i) {
+        cardinality[i].resize(candidates_count[i], 1);
+    }
+
+    std::vector<ui> local_cardinality(data_vertices_count);
+    std::fill(local_cardinality.begin(), local_cardinality.end(), 0);
+
+    for (int i = query_vertices_count - 1; i >= 0; --i) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
+            return true;
+        }
+        VertexID u = order[i];
+        TreeNode& u_node = tree[u];
+
+        ui flag_num = 0;
+        ui updated_flag_count = 0;
+
+        // Compute the intersection of TE_Candidates and NTE_Candidates.
+        for (ui j = 0; j < candidates_count[u]; ++j) {
+            VertexID v = candidates[u][j];
+
+            if (v == INVALID_VERTEX_ID)
+                continue;
+
+            if (flag[v] == flag_num) {
+                flag[v] += 1;
+                updated_flag[updated_flag_count++] = v;
+            }
+        }
+
+        for (ui j = 0; j < u_node.bn_count_; ++j) {
+            VertexID u_bn = u_node.bn_[j];
+            flag_num += 1;
+            for (auto iter = NTE_Candidates[u][u_bn].begin(); iter != NTE_Candidates[u][u_bn].end(); ++iter) {
+                for (auto v : iter->second) {
+                    if (flag[v] == flag_num) {
+                        flag[v] += 1;
+                    }
+                }
+            }
+        }
+
+        flag_num += 1;
+
+        // Get the cardinality of the candidates of u.
+        for (ui j = 0; j < candidates_count[u]; ++j) {
+            VertexID v = candidates[u][j];
+            if (v != INVALID_VERTEX_ID && flag[v] == flag_num) {
+                local_cardinality[v] = cardinality[u][j];
+            }
+            else {
+                cardinality[u][j] = 0;
+            }
+        }
+
+        VertexID u_p = u_node.parent_;
+        VertexID* frontiers = candidates[u_p];
+        ui frontiers_count = candidates_count[u_p];
+
+        // Loop over TE_Candidates.
+        for (ui j = 0; j < frontiers_count; ++j) {
+            VertexID v_f = frontiers[j];
+
+            if (v_f == INVALID_VERTEX_ID) {
+                cardinality[u_p][j] = 0;
+                continue;
+            }
+
+            ui temp_score = 0;
+            for (auto iter = TE_Candidates[u][v_f].begin(); iter != TE_Candidates[u][v_f].end();) {
+                VertexID v = *iter;
+                temp_score += local_cardinality[v];
+                if (local_cardinality[v] == 0) {
+                    iter = TE_Candidates[u][v_f].erase(iter);
+                    for (ui k = 0; k < u_node.children_count_; ++k) {
+                        VertexID u_c = u_node.children_[k];
+                        TE_Candidates[u_c].erase(v);
+                    }
+
+                    for (ui k = 0; k < u_node.fn_count_; ++k) {
+                        VertexID u_c = u_node.fn_[k];
+                        NTE_Candidates[u_c][u].erase(v);
+                    }
+                }
+                else {
+                    ++iter;
+                }
+            }
+
+            cardinality[u_p][j] *= temp_score;
+        }
+
+        // Clear updated flag.
+        for (ui j = 0; j < updated_flag_count; ++j) {
+            flag[updated_flag[j]] = 0;
+            local_cardinality[updated_flag[j]] = 0;
+        }
+    }
+
+    compactCandidates(candidates, candidates_count, query_vertices_count);
+    sortCandidates(candidates, candidates_count, query_vertices_count);
+
+
+    for (ui i = 0; i < query_vertices_count; ++i) {
+        if (candidates_count[i] == 0) {
+            return false;
+        }
+    }
+
+    for (ui i = 1; i < query_vertices_count; ++i) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
+            return true;
+        }
+        VertexID u = order[i];
+        TreeNode& u_node = tree[u];
+
+        // Clear TE_Candidates.
+        {
+            VertexID u_p = u_node.parent_;
+            auto iter = TE_Candidates[u].begin();
+            while (iter != TE_Candidates[u].end()) {
+                VertexID v_f = iter->first;
+                if (!std::binary_search(candidates[u_p], candidates[u_p] + candidates_count[u_p], v_f)) {
+                    iter = TE_Candidates[u].erase(iter);
+                }
+                else {
+                    std::sort(iter->second.begin(), iter->second.end());
+                    iter++;
+                }
+            }
+        }
+
+        // Clear NTE_Candidates.
+        {
+            for (ui j = 0; j < u_node.bn_count_; ++j) {
+                VertexID u_p = u_node.bn_[j];
+                auto iter = NTE_Candidates[u][u_p].end();
+                while (iter != NTE_Candidates[u][u_p].end()) {
+                    VertexID v_f = iter->first;
+                    if (!std::binary_search(candidates[u_p], candidates[u_p] + candidates_count[u_p], v_f)) {
+                        iter = NTE_Candidates[u][u_p].erase(iter);
+                    }
+                    else {
+                        std::sort(iter->second.begin(), iter->second.end());
+                        iter++;
+                    }
+                }
+            }
+        }
+    }
+
+//    for (ui i = 0; i < query_vertices_count; ++i) {
+//        VertexID u = i;
+//        std::cout << u << ':';
+//        for (ui j = 0; j < candidates_count[u]; ++j) {
+//            std::cout << candidates[u][j] << ' ';
+//        }
+//        std::cout << std::endl;
+//    }
+//
+//    for (ui i = 1; i < query_vertices_count; ++i) {
+//        VertexID u = order[i];
+//        // TE_Candidates
+//        std::cout << "TE_Candidates: " << u << ',' << tree[u].parent_ << std::endl;
+//        for (auto iter = TE_Candidates[u].begin(); iter != TE_Candidates[u].end(); ++iter) {
+//            std::cout << iter->first << ": ";
+//            for (auto v : iter->second) {
+//                std::cout << v << ' ';
+//                if (!data_graph->checkEdgeExistence(iter->first, v)) {
+//                    std::cout << "Edge does not exist" << std::endl;
+//                }
+//            }
+//            std::cout << std::endl;
+//        }
+//        std::cout << "-----" << std::endl;
+//        for (ui j = 0; j < tree[u].bn_count_; ++j) {
+//            VertexID u_bn = tree[u].bn_[j];
+//            std::cout << "NTE_Candidates: " << u << ',' << u_bn << std::endl;
+//            for (auto iter = NTE_Candidates[u][u_bn].begin(); iter != NTE_Candidates[u][u_bn].end(); ++iter) {
+//                std::cout << iter->first << ": ";
+//                for (auto v : iter->second) {
+//                    std::cout << v << ' ';
+//                    if (!data_graph->checkEdgeExistence(iter->first, v)) {
+//                        std::cout << "Edge does not exist" << std::endl;
+//                    }
+//                }
+//                std::cout << std::endl;
+//            }
+//            std::cout << "-----" << std::endl;
+//        }
+//    }
+
+    return false;
+}
+/**
+ * 首先构造最初始的数据结构, 分为两步:
+ * 1. 使用label初步生成cs
+ * 2. 如果查询图两节点之间存在边,那么cs每个点都需要存在至少一个邻居
+ * 然后使用neighbor-safety的概念进行进一步压缩,其实就是NLF,前后做三次
+*/
+bool
 FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui **&candidates,
                                ui *&candidates_count, ui *&order, TreeNode *&tree,
                                int64_t& time_limit) {
 
+    // VEQ与DAF存在相似的地方,最初的candidate生成方式是相同的,生成的order和tree也是相同的
     if (!LDFFilter(data_graph, query_graph, candidates, candidates_count, time_limit))
         return false;
     GenerateFilteringPlan::generateDPisoFilterPlan(data_graph, query_graph, tree, order);
 
     ui q_num = query_graph->getVerticesCount();
-
+    // std::cout << " candidates_cnt before edge check: ";
+    // for (ui i = 0; i < q_num; i++) {
+    //     std::cout << candidates_count[i] << ",";
+    // }
+    // std::cout << std::endl;
+    // 更新节点间边检查代码,借鉴build table代码
     bool** flag = new bool*[query_graph->getVerticesCount()];
     for (ui i = 0; i < query_graph->getVerticesCount(); i++) {
         flag[i] = new bool[data_graph->getVerticesCount()];
@@ -341,12 +791,12 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
             flag[i][candidates[i][j]] = true;
         }
     }
-
+    // 生成文章中提到的D数组,因为需要做大量的搜索,所以使用set容器
     std::vector<std::set<VertexID>> m_candidates;
     m_candidates.resize(q_num);
     bool overtime = false;
     for (ui u = 0; u < q_num; u++) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -363,6 +813,7 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
                 for (ui k = 0; k < cnbrs_count; k++) {
                     auto cnbr = cnbrs[k];
                     if (flag[unbr][cnbr] == true) {
+                        // std::cout << u << '|' << unbr << ',' << can << '|' << cnbr << "check ok" << std::endl;
                         f_del = false;
                         break;
                     }
@@ -370,6 +821,7 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
                 if (f_del == true) break;
             }
             if (f_del == true) {
+                // std::cout << u << '|' << can << " check error" << std::endl;
                 if (candidates_count[u] == 1) {
                     std::cout << "candidates for " << u << " is empty" << std::endl;
                     return false;
@@ -379,9 +831,10 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
                 i--;
             }
         }
+        // std::cout << "edge check for " << u << " ok" << std::endl;
     }
 
-    // do NLF 3 times (According to the original paper)
+    // 然后进行交替三次的NLF检查(According to the original paper)
     for (ui i = 0; i < q_num; i++) {
         for (ui j = 0; j < candidates_count[i]; j++) {
             m_candidates[i].insert(candidates[i][j]);
@@ -389,9 +842,8 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
     }
     for (ui k = 0; k < 3; ++k) {
         if (k % 2 == 1) {
-            // When traversing in reverse, forward calculation is used to ensure that the child is fully processed
-            for (ui i = 0; i < q_num; i++) {
-                if (TimeOp::getClockNan() >= time_limit) {
+            for (ui i = 0; i < q_num; i++) { // 反向遍历的时候,正向计算来保证child被完全处理过
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     overtime = true;
                     goto EXIT;
                 }
@@ -401,9 +853,9 @@ FilterVertices::VEQFilter(const Graph *data_graph, const Graph *query_graph, ui 
                                    candidates, candidates_count, m_candidates);
             }
         }
-        else {  // When traversing in forward, calculation in reverse
-            for (ui i = q_num - 1; i != (ui)-1; i--) {
-                if (TimeOp::getClockNan() >= time_limit) {
+        else {
+            for (ui i = q_num - 1; i != (ui)-1; i--) { // 正向遍历的时候,反向计算来保证child被完全处理过
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     overtime = true;
                     goto EXIT;
                 }
@@ -438,7 +890,8 @@ FilterVertices::VEQPruneCandidates(const Graph *data_graph, const Graph *query_g
     const VertexID* vnbrs;
     ui degree = query_graph->getVertexDegree(u);
     for (ui i = 0; i < candidates_count[u]; i++) {
-        // compute h(u,v)
+        // 首先计算h(u,v)
+        // std::cout << " candidates[" << u << "][" << i << "] check start" << std::endl;
         VertexID v = candidates[u][i];
         auto v_iter = D[u].find(v);
         if (v_iter == D[u].end()) continue;
@@ -452,9 +905,9 @@ FilterVertices::VEQPruneCandidates(const Graph *data_graph, const Graph *query_g
         vnbrs = data_graph->getVertexNeighbors(v, vnbrs_num);
 
 #ifdef ELABELED_GRAPH
-        std::unordered_map<LabelID, std::unordered_map<LabelID, ui>> v_nlf; // comput nlf on cs
+        std::unordered_map<LabelID, std::unordered_map<LabelID, ui>> v_nlf; // 这个nlf需要在cs上做计算
         auto elabels = data_graph->getVertexEdgeLabels(v, vnbrs_num);
-        for (ui j = 0; j < vnbrs_num; j++) { // check duplicate vertices
+        for (ui j = 0; j < vnbrs_num; j++) { // 检查重复点
             VertexID vc = vnbrs[j];
             LabelID vc_label = data_graph->getVertexLabel(vc);
             LabelID elabel = elabels[j];
@@ -493,8 +946,23 @@ FilterVertices::VEQPruneCandidates(const Graph *data_graph, const Graph *query_g
                 break;
         }
 #else
-        std::unordered_map<LabelID, ui> v_nlf; // compute nlf on cs
-        for (ui j = 0; j < vnbrs_num; j++) { // check duplicate vertices
+        std::unordered_map<LabelID, ui> v_nlf; // 这个nlf需要在cs上做计算
+        // for (ui j = 0; j < unbrs_num; j++) { // 不检查重复点
+        //     VertexID unbr = unbrs[j];
+        //     for (ui k = 0; k < vnbrs_num; k++) {
+        //         VertexID vc = vnbrs[k];
+        //         auto iter = D[unbr].find(vc);
+        //         if (iter != D[unbr].end()) {
+        //             ui vc_label = data_graph->getVertexLabel(vc);
+        //             if (v_nlf.find(vc_label) != v_nlf.end()) {
+        //                 v_nlf[vc_label] += 1;
+        //             } else {
+        //                 v_nlf[vc_label] = 1;
+        //             }
+        //         }
+        //     }
+        // }
+        for (ui j = 0; j < vnbrs_num; j++) { // 检查重复点
             VertexID vc = vnbrs[j];
             for (ui k = 0; k < unbrs_num; k++) {
                 VertexID unbr = unbrs[k];
@@ -511,26 +979,34 @@ FilterVertices::VEQPruneCandidates(const Graph *data_graph, const Graph *query_g
             }
         }
         if (v_nlf.size() < u_nlf->size()) {
+            // std::cout << "v.size(" << v_nlf.size() << ") < u.size(" << u_nlf->size() << ")" << std::endl;
+            // std::cout << "v(" << v << ") < u(" << u << ")" << std::endl;
             D[u].erase(v_iter);
             continue;
         }
+        // std::cout << "nlf for u(" << u << "): ";
         for (auto u_label : *u_nlf) {
             auto v_label = v_nlf.find(u_label.first);
             if (v_label == v_nlf.end() || v_label->second < u_label.second) {
+                // std::cout << "v_label(" << v_label->second << ") < u_label("
+                //           << u_label.second << ")" << std::endl;
                 h_value = false;
                 break;
             }
+            // std::cout << u_label.first << ": " << v_label->second << '|' <<  u_label.second << ", ";
         }
 #endif
+        // std::cout << std::endl;
         if (h_value == false) {
             D[u].erase(v_iter);
             continue;
         }
+        // std::cout << " candidates[" << u << "][" << i << "] h fun ok" << std::endl;
 #endif
-        // check children vertices
+        // 然后检查子节点情况
         for (ui j = 0; j < child_vertices_count; j++) {
             VertexID uc = child_vertices[j];
-            bool uc_flag = false;
+            bool uc_flag = false; //标识当前子节点
             for (ui k = 0; k < vnbrs_num; k++) {
                 VertexID vc = vnbrs[k];
                 auto iter = D[uc].find(vc);
@@ -540,6 +1016,7 @@ FilterVertices::VEQPruneCandidates(const Graph *data_graph, const Graph *query_g
                 }
             }
             if (uc_flag == false) {
+                // std::cout << "child check failed " << u << "," << v << std::endl;
                 D[u].erase(v_iter);
                 break;
             }
@@ -597,16 +1074,24 @@ FilterVertices::verifyExactTwigIso(const Graph *data_graph, const Graph *query_g
         for (ui j = 0; j < right_partition_size; ++j) {
             VertexID data_vertex_neighbor = data_vertex_neighbors[j];
 
+            // 这里边的意思是,两个点是否是candidate关系,left是query点,right是data点
             if (valid_candidates[query_vertex_neighbor][data_vertex_neighbor]) {
                 left_to_right_edges[edge_count++] = j;
             }
         }
     }
     left_to_right_offset[left_partition_size] = edge_count;
+    // 最终构建出来是一张二部图,左边是查询点,右边是数据点,然后调用match_bfs函数做匹配
 
     memset(left_to_right_match, -1, left_partition_size * sizeof(int));
     memset(right_to_left_match, -1, right_partition_size * sizeof(int));
 
+    // 不想看了,就当是个二部图匹配吧,每一个参数做一下简单说明,会用就行（看着就头疼,不想看了）
+    // left_to_right_offset: 结合下一个参数,标识左侧每个点对应哪些边
+    // left_to_right_edges:  二部图中的边
+    // .._to_.._match: 应该是映射关系
+    // match_..不知道做啥的,也不想知道
+    // .._partition_size: 就是左侧点和右侧点各自的总数
     GraphOperations::match_bfs(left_to_right_offset, left_to_right_edges, left_to_right_match,
                                right_to_left_match, match_visited, match_queue, match_previous,
                                left_partition_size, right_partition_size);
@@ -626,7 +1111,7 @@ FilterVertices::compactCandidates(ui **&candidates, ui *&candidates_count, ui q_
         for (ui j = 0; j < candidates_count[query_vertex]; ++j) {
             VertexID data_vertex = candidates[query_vertex][j];
 
-            if (data_vertex != (ui)-1) {
+            if (data_vertex != INVALID_VERTEX_ID) {
                 candidates[query_vertex][next_position++] = data_vertex;
             }
         }
@@ -745,7 +1230,7 @@ FilterVertices::generateCandidates(const Graph *data_graph, const Graph *query_g
         for (ui j = 0; j < candidates_count[pivot_vertex]; ++j) {
             VertexID v = candidates[pivot_vertex][j];
 
-            if (v == (ui)-1)
+            if (v == INVALID_VERTEX_ID)
                 continue;
             ui v_nbrs_count;
             const VertexID* v_nbrs = data_graph->getVertexNeighbors(v, v_nbrs_count);
@@ -823,7 +1308,7 @@ FilterVertices::generateCandidates(const Graph *data_graph, const Graph *query_g
 }
 
 /**
- * Cans of the current point must satisfy a neighbor relationship with the cans of the points in the pivot
+ * 简单来说,要求当前点的cans必须和pivot中的点的cans满足邻居关系
 */
 void
 FilterVertices::pruneCandidates(const Graph *data_graph, const Graph *query_graph, VertexID query_vertex,
@@ -842,7 +1327,7 @@ FilterVertices::pruneCandidates(const Graph *data_graph, const Graph *query_grap
         for (ui j = 0; j < candidates_count[pivot_vertex]; ++j) {
             VertexID v = candidates[pivot_vertex][j];
 
-            if (v == (ui)-1)
+            if (v == INVALID_VERTEX_ID)
                 continue;
             ui v_nbrs_count;
             auto v_nbrs = data_graph->getVertexNeighbors(v, v_nbrs_count);
@@ -876,7 +1361,7 @@ FilterVertices::pruneCandidates(const Graph *data_graph, const Graph *query_grap
         for (ui j = 0; j < candidates_count[pivot_vertex]; ++j) {
             VertexID v = candidates[pivot_vertex][j];
 
-            if (v == (ui)-1)
+            if (v == INVALID_VERTEX_ID)
                 continue;
             ui v_nbrs_count;
             auto v_nbrs = data_graph->getVertexNeighbors(v, v_nbrs_count);
@@ -904,11 +1389,11 @@ FilterVertices::pruneCandidates(const Graph *data_graph, const Graph *query_grap
 
     for (ui i = 0; i < candidates_count[query_vertex]; ++i) {
         ui v = candidates[query_vertex][i];
-        if (v == (ui)-1)
+        if (v == INVALID_VERTEX_ID)
             continue;
 
         if (flag[v] != count) {
-            candidates[query_vertex][i] = (ui)-1;
+            candidates[query_vertex][i] = INVALID_VERTEX_ID;
         }
     }
 
@@ -1009,7 +1494,7 @@ FilterVertices::computeCandidatesFalsePositiveRatio(const Graph *data_graph, con
                 for (ui k = 0; k < candidates_count[u_nbr]; ++k) {
                     ui v = candidates_copy[u_nbr][k];
 
-                    if (v == (ui)-1)
+                    if (v == INVALID_VERTEX_ID)
                         continue;
 
                     ui v_nbr_cnt;
@@ -1033,11 +1518,11 @@ FilterVertices::computeCandidatesFalsePositiveRatio(const Graph *data_graph, con
             for (ui j = 0; j < candidates_count[u]; ++j) {
                 ui v = candidates_copy[u][j];
 
-                if (v == (ui)-1)
+                if (v == INVALID_VERTEX_ID)
                     continue;
 
                 if (flag[v] != valid_flag) {
-                    candidates_copy[u][j] = (ui)-1;
+                    candidates_copy[u][j] = INVALID_VERTEX_ID;
                     is_steady = false;
                 }
             }
@@ -1056,7 +1541,7 @@ FilterVertices::computeCandidatesFalsePositiveRatio(const Graph *data_graph, con
         for (ui j = 0; j < candidates_count[u]; ++j) {
             ui v = candidates_copy[u][j];
 
-            if (v == (ui)-1)
+            if (v == INVALID_VERTEX_ID)
                 negative_count += 1;
         }
 
@@ -1106,7 +1591,7 @@ FilterVertices::RMFilter(const Graph *data_graph, const Graph *query_graph, ui *
     bool* index = new bool[data_vertices_count];
     bool overtime = false;
     for (ui i = 0; i < vertices_count; i++) {
-        if (TimeOp::getClockNan() >= time_limit) {
+        if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
             overtime = true;
             goto EXIT;
         }
@@ -1134,6 +1619,11 @@ FilterVertices::RMFilter(const Graph *data_graph, const Graph *query_graph, ui *
         }
         candidates_count[i] = can_cnt;
     }
+    // std::cout << "candidates_cnt:";
+    //     for (ui i = 0; i < vertices_count; i++) {
+    //     std::cout << candidates_count[i] << ",";
+    // }
+    // std::cout << std::endl;
     EXIT:
     delete[] index;
     delete[] degeneracy_ordering;
@@ -1372,14 +1862,14 @@ FilterVertices::CaLiGFilter(const Graph *data_graph, const Graph *query_graph, u
     for (ui k = 0; k < 3; k++) {
         if (k%2 == 0) {
             for (VertexID u = 0; u < q_num; u++) {
-                if (TimeOp::getClockNan() >= time_limit) {
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     return true;
                 }
                 CaLiGPruneCandidate(data_graph,query_graph, u, candidates, candidates_count);
             }
         } else {
             for (VertexID u = q_num - 1; u != (ui)-1; u--) {
-                if (TimeOp::getClockNan() >= time_limit) {
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     return true;
                 }
                 CaLiGPruneCandidate(data_graph,query_graph, u, candidates, candidates_count);
@@ -1392,6 +1882,7 @@ FilterVertices::CaLiGFilter(const Graph *data_graph, const Graph *query_graph, u
 void
 FilterVertices::CaLiGPruneCandidate(const Graph *data_graph, const Graph *query_graph, VertexID u,
                                     ui** &candidates, ui* &candidates_count) {
+    // auto start = std::chrono::high_resolution_clock::now();
     ui unbrs_num = 0, vnbrs_num = 0;
     const VertexID* unbrs = query_graph->getVertexNeighbors(u, unbrs_num);
     const VertexID* vnbrs;
@@ -1399,6 +1890,7 @@ FilterVertices::CaLiGPruneCandidate(const Graph *data_graph, const Graph *query_
     VertexID** adj = new VertexID*[unbrs_num];
     ui* adj_cnt = new ui[unbrs_num];
     for (ui i = 0; i < candidates_count[u]; i++) {
+        // std::cout << " candidates[" << u << "][" << i << "] check start" << std::endl;
         VertexID v = candidates[u][i];
         bool f_del = false;
         vnbrs = data_graph->getVertexNeighbors(v, vnbrs_num);
@@ -1415,7 +1907,19 @@ FilterVertices::CaLiGPruneCandidate(const Graph *data_graph, const Graph *query_
                     edge_info[j].emplace_back(k+unbrs_num);
                 }
             }
+            // 如果有任意一个邻居的候选为空,那么直接删除原候选v
             if (edge_info[j].size() == 0) {
+                // std::cout << u << '|' << v << ':' << "unbr:" << unbr << " can is empty" << std::endl;
+                // std::cout << "cans for " << unbr << ":";
+                // for (ui k = 0; k < candidates_count[unbr]; k++) {
+                //     std::cout << candidates[unbr][k] << ',';
+                // }
+                // std::cout << std::endl;
+                // std::cout << "nbrs for " << v << ":";
+                // for (ui k = 0; k < vnbrs_num; k++) {
+                //     std::cout << vnbrs[k] << ',';
+                // }
+                // std::cout << std::endl;
                 f_del = true;
                 break;
             }
@@ -1423,13 +1927,26 @@ FilterVertices::CaLiGPruneCandidate(const Graph *data_graph, const Graph *query_
 
         if (f_del == false) {  // do bi matching check
             // build adj & adj_cnt
+            // std::cout << "adj_cnt:";
             for (ui j = 0; j < left_cnt; j++) {
                 adj[j] = edge_info[j].data();
                 adj_cnt[j] = edge_info[j].size();
+                // std::cout << adj_cnt[j] << ',';
             }
+            // std::cout << std::endl;
+            // for (ui j = 0; j < left_cnt; j++) {
+            //     std::cout << "adj[" << j << "]:";
+            //     for (ui k = 0; k < adj_cnt[j]; k++) {
+            //         std::cout << adj[j][k] << ',';
+            //     }
+            //     std::cout << std::endl;
+            // }
+            // std::cout << "right_cnt:" << right_cnt << std::endl;
             HKmatch sample = HKmatch(left_cnt, right_cnt, adj, adj_cnt);
             ui max_match = sample.MaxMatch();
             if (max_match != left_cnt) {
+                // std::cout << u << '|' << v << ':' << "bimatching error: " << left_cnt << '|'
+                //           << max_match << std::endl;
                 f_del = true;
             }
         }
@@ -1441,5 +1958,8 @@ FilterVertices::CaLiGPruneCandidate(const Graph *data_graph, const Graph *query_
     }
     delete[] adj;
     delete[] adj_cnt;
+    // auto end = std::chrono::high_resolution_clock::now();
+    // double caligPruneTime = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    // std::cout << "caligPruneTime:" << caligPruneTime << std::endl;
     return;
 }

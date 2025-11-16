@@ -1,6 +1,6 @@
 #include "leapfrogtriejoin.h"
 #include "computesetintersection.h"
-#include "timeOp.h"
+
 
 bool leapfrogtriejoin::execute(size_t& call_cnt, size_t& embedding_cnt, int64_t& time_limit) {
     uint32_t start_depth = input_->get_tuple_length();
@@ -66,7 +66,7 @@ bool leapfrogtriejoin::execute(size_t& call_cnt, size_t& embedding_cnt, int64_t&
 
             while (true) {
                 while (idx_[cur_depth] < num_local_candidates_[cur_depth]) {
-                    if (TimeOp::getClockNan() >= time_limit) {
+                    if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                         return true;
                     }
                     uint32_t u = vertex_ordering_[cur_depth];
@@ -254,7 +254,7 @@ bool leapfrogtriejoin::enumerate_non_core_results(uint32_t start_depth, uint32_t
             uint32_t temp_count = num_local_candidates_[cur_depth];
             uint32_t* temp_buffer = local_candidates_[cur_depth];
             for (uint32_t j = 0; j < temp_count; ++j) {
-                if (TimeOp::getClockNan() >= time_limit) {
+                if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                     return true;
                 }
                 if (visited_[temp_buffer[j]]) {
@@ -298,7 +298,7 @@ bool leapfrogtriejoin::enumerate_non_core_results(uint32_t start_depth, uint32_t
             idx_[cur_depth] = 0;
             while (true) {
                 while (idx_[cur_depth] < num_local_candidates_[cur_depth]) {
-                    if (TimeOp::getClockNan() >= time_limit) {
+                    if (std::chrono::high_resolution_clock::now().time_since_epoch().count() >= time_limit) {
                         return true;
                     }
                     v = local_candidates_[cur_depth][idx_[cur_depth]++];

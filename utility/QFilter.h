@@ -1,6 +1,8 @@
 #ifndef SUBGRAPHMATCHING_QFLITER_H
 #define SUBGRAPHMATCHING_QFLITER_H
 
+#pragma once
+
 #include "configuration/config.h"
 #include <cstdio>
 #include <cstdlib>

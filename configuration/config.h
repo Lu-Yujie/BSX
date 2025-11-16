@@ -1,3 +1,5 @@
+
+
 #ifndef SUBGRAPHMATCHING_CONFIG_H
 #define SUBGRAPHMATCHING_CONFIG_H
 
@@ -40,19 +42,24 @@
 #define ENABLE_FAILING_SET
 
 /**
- * Define ANALYZE_MEMORY to analyze memory consumption
+ * Define DYNAMIC_FAIL_REASON to enable the failing set pruning set intersection method.
  */
-// #define ANALYZE_MEMORY
+// #define DYNAMIC_FAIL_REASON
 
 /**
- * Define FIPE_HOMOMORPHISM to analyze memory consumption
+ * Define ENABLE_EQUIVALENT_SET to enable the equivalent set pruning technique in VEQ
  */
-#define FIPE_HOMOMORPHISM
+#define ENABLE_EQUIVALENT_SET
 
 /**
- * Define minimal subset of candidates for backtracking
+ * Define BSX_SIM_THRESHOLD to change the similiarity threshold, 100 means identical.
  */
-#define MIN_SUBCANS 16
+#define BSX_SIM_THRESHOLD 25
+
+/**
+ * Define PART_SEP_KIND to choose diff seperation methods.
+ */
+#define PART_SEP_KIND 1
 
 #define PRINT_SEPARATOR "------------------------------"
 

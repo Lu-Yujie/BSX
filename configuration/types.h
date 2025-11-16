@@ -1,3 +1,5 @@
+
+
 #ifndef SUBGRAPHMATCHING_TYPES_H
 #define SUBGRAPHMATCHING_TYPES_H
 
@@ -30,11 +32,11 @@ class TreeNode {
 public:
     VertexID id_;
     VertexID parent_;
-    ui level_;
-    ui under_level_count_;
-    ui children_count_;
-    ui bn_count_;
-    ui fn_count_;
+    ui level_;              // bfs中，在第几层
+    ui under_level_count_;  // 他的邻居中，在level之下的有多少
+    ui children_count_;     // 多少子节点
+    ui bn_count_;           // 邻居中有多少在他前面
+    ui fn_count_;           // 邻居中有多少在他后面
     VertexID* under_level_;
     VertexID* children_;
     VertexID* bn_;

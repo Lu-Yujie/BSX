@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # Batch-Backtracking Search
 
 Subgraph matching is a fundamental problem in graph analysis. Recently, many algorithms have been developed, often based on classic backtracking search. Traditional **b**acktracking **s**earch matches **1** vertex at a time (denoted B $\circledS$ 1), which can cause redundant computations due to overlapping search spaces. To address this, we propose a novel *batch-**b**acktracking **s**earch* framework that allows matching a set of data vertices **$X$** (denoted B $\circledS X$) in each backtracking step. B $\circledS X$ models the search space as a “search box,” enabling flexible exploration of the search space and substantially reducing overlap between search subspaces. It selects batches to group data vertices that have similar search spaces. For each search box, we introduce a refinement procedure to filter out unpromising candidate mappings. In addition, we propose a homomorphism termination to stop the backtracking process as early as possible and an efficient embedding enumeration method to list all embeddings within a search box simultaneously. Extensive experiments on real-world graphs show that B $\circledS X$ significantly outperforms existing state-of-the-art algorithms, achieving speedups up to nine orders of magnitude under the EPS metric.
@@ -126,3 +127,7 @@ Notes:
 
 * Only minor modifications to the data-processing scripts are typically needed for different experiment settings, such as adding specific paths or adjusting column names.
 * The flexible experiments were conducted after applying the two patches included in the supplement folder.
+=======
+This is a batch experimental version of the BSX code that applies Support-similar-batches-grouping.patch.
+
+>>>>>>> Stashed changes

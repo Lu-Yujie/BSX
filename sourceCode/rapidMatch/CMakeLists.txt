@@ -1,6 +1,4 @@
 # construct the lib of RapidMatch
-add_subdirectory(nucleus_decomposition)
-
 set(RM_SRC
     leapfrogtriejoin/leapfrogtriejoin.cpp
     hashjoin/nop_join.cpp
@@ -15,7 +13,7 @@ include_directories(
 
 add_library(RM SHARED ${RM_SRC})
 
-target_link_libraries(RM utility nd)
+target_link_libraries(RM graph utility)
 
 set_target_properties(RM PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

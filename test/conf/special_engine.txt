@@ -1,2 +1,0 @@
-wo_order: BSX
-wo_filter: VF3

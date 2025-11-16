@@ -8,7 +8,7 @@ void GraphOperations::getKCore(const Graph *graph, int *core_table) {
 
     int* vertices = new int[vertices_count];          // Vertices sorted by degree.
     int* position = new int[vertices_count];          // The position of vertices in vertices array.
-    int* degree_bin = new int[max_degree + 1];      // Degree from 0 to max_degree.
+    int* degree_bin = new int[max_degree + 1];      // Degree from 0 to max_degree. 每一个度的点有多少个
     int* offset = new int[max_degree + 1];          // The offset in vertices array according to degree.
 
     std::fill(degree_bin, degree_bin + (max_degree + 1), 0);
@@ -19,6 +19,7 @@ void GraphOperations::getKCore(const Graph *graph, int *core_table) {
         degree_bin[degree] += 1;
     }
 
+    // 把degreee累计量放到offset中，这玩意能有用吗？？？
     int start = 0;
     for (int i = 0; i < max_degree + 1; ++i) {
         offset[i] = start;
@@ -36,6 +37,7 @@ void GraphOperations::getKCore(const Graph *graph, int *core_table) {
         offset[i] = offset[i - 1];
     }
     offset[0] = 0;
+    // 这一波操作，我只能说，nb
 
     for (int i = 0; i < vertices_count; ++i) {
         int v = vertices[i];

@@ -6,12 +6,114 @@
 */
 #include <stack>
 #include <unordered_map>
+#include <vector>
 #include <bitset>
 #include <gmp.h>
-#include "common.h"
+#include "graph/graph.h"
 #include "pretty_print.h"
 using namespace std;
 typedef unsigned int ui;
+
+class b_search{
+public:
+/**
+ * universal binary search for ui*
+*/
+// small array: linear seach
+static ui smallArraySearch(const ui* arr, ui size, ui target) {
+    for (ui i = 0; i < size; ++i) {
+        if (arr[i] == target)
+            return i;
+    }
+    return (ui)-1;
+}
+
+// large array, use lower bound func
+static ui largeArraySearch(const ui* arr, ui size, ui target) {
+    auto ptr = lower_bound(arr, arr + size, target);
+    if (ptr != arr + size && *ptr == target)
+        return ptr - arr;
+    else
+        return (ui)-1;
+}
+
+static ui search(const ui* arr, ui size, ui target) {
+    if (size <= 4) { // 可根据经验设定阈值
+        return smallArraySearch(arr, size, target);
+    }
+    return largeArraySearch(arr, size, target);
+}
+};  // class b_search
+
+struct SimInfo {
+    bool enable_;
+    ui** batches_idxs_;
+    ui** sim_batches_;
+    ui** offset_;
+    ui* num_;
+    ui** idxs_;  // indicate each eq_batch belongs to which sim_batch
+    bool* valid_;
+    ui* max_diff_;
+    VertexID** diff_unbrs_;  // the u influences diff_unbrs, match to u, set sim_batch of diff_unbrs to invalid
+    ui* diff_unbrs_cnt_;
+    VertexID* judge_nbrs_;
+    bool** same_or_diff_;  // diff->true, same&no-relation->false
+    bool** batches_processed_;  // used to skip invalid batches
+    ui q_num;
+    SimInfo() { enable_ = false; }
+    void init(const Graph* graph, ui max_candidates_num) {
+        q_num = graph->getVerticesCount();
+        batches_idxs_ = new ui*[q_num];
+        sim_batches_ = new ui*[q_num];
+        offset_ = new ui*[q_num];
+        num_ = new ui[q_num];
+        idxs_ = new ui*[q_num];
+        valid_ = new bool[q_num];
+        max_diff_ = new ui[q_num];
+        diff_unbrs_ = new VertexID*[q_num];
+        diff_unbrs_cnt_ = new ui[q_num];
+        same_or_diff_ = new bool*[q_num];
+        judge_nbrs_ = new VertexID[q_num];
+        batches_processed_ = new bool*[q_num];
+        memset(diff_unbrs_cnt_, 0, sizeof(ui)*q_num);
+        memset(valid_, false, sizeof(bool)*q_num);
+        for (ui i = 0; i < q_num; i++) {
+            diff_unbrs_[i] = new VertexID[graph->getVertexDegree(i)];
+            max_diff_[i] = (graph->getVertexDegree(i) - 1)*(1 - BSX_SIM_THRESHOLD * 0.01);
+            if (max_diff_[i] == 0) continue;
+            batches_idxs_[i] = new ui[max_candidates_num];
+            sim_batches_[i] = new ui[max_candidates_num];
+            offset_[i] = new ui[max_candidates_num + 1];
+            idxs_[i] = new ui[max_candidates_num];
+            batches_processed_[i] = new bool[max_candidates_num];
+            same_or_diff_[i] = new bool[q_num];
+        }
+    }
+    ~SimInfo() {
+        if (!enable_) return;
+        for (ui i = 0; i < q_num; i++) {
+            delete[] diff_unbrs_[i];
+            if (max_diff_[i] == 0) continue;
+            delete[] batches_idxs_[i];
+            delete[] sim_batches_[i];
+            delete[] offset_[i];
+            delete[] idxs_[i];
+            delete[] batches_processed_[i];
+            delete[] same_or_diff_[i];
+        }
+        delete[] batches_idxs_;
+        delete[] sim_batches_;
+        delete[] offset_;
+        delete[] num_;
+        delete[] idxs_;
+        delete[] valid_;
+        delete[] max_diff_;
+        delete[] diff_unbrs_;
+        delete[] diff_unbrs_cnt_;
+        delete[] batches_processed_;
+        delete[] same_or_diff_;
+    }
+};
 
 /**structures used to store batch info
  * nodes: store batches which are seperated by offset
@@ -31,11 +133,13 @@ struct BatchInfo {
     // cur_batch_nodes = nodes.top()+offset.top()[idx[depth]]
     // cur_batch_cnt = cnt.top()[idx[depth]]
     stack<VertexID*> nodes_;
-    stack<ui*> offset_;
+    stack<ui*> offset_;  // start from 0
     stack<ui*> cnt_;     // # of each batch
     stack<ui> idx_;      // point to current batch
     stack<ui> num_;      // #batches
     stack<ui> maxCnt_;   // max # of each batches
+    static SimInfo* sim_info;  // release memory at the end of engine
+
     BatchInfo() {}
     ~BatchInfo() {
         while(!nodes_.empty()) {
@@ -97,6 +201,30 @@ struct BatchInfo {
     }
 };
 
+/**
+ * Embedding info
+ * mapping between depth, u(query node), v(data node)
+ * u2v: u->v, each u only match to one v
+ * v2depth: v->depth, too much v, use map instead of array
+ * depth2u: depth->u, use vector for dynamic tree height
+*/
+class Embedding{
+public:
+    VertexID* u2v;               // u->v, use the 1st v of batch
+    vector<VertexID> depth2u;    // depth->u
+
+    Embedding(ui cnt) {
+        u2v = new VertexID[cnt];
+        depth2u.reserve(cnt);
+    }
+    ~Embedding() {
+        delete[] u2v;
+    }
+};
+
+/**
+ * new index structure, update in time
+*/
 class BSXIndex {
 public:
     stack<Edges*>** index_;  // can be used to judge edge existence, index_[u_1][u_2].size() != 0
@@ -106,7 +234,8 @@ public:
     ui* index_cnt_;         //            ''             valid_cnt      ''
     const Graph* q_graph_;
     const Graph* d_graph_;
-    ui max_can_num_;
+    // u.top().v -> (nbr_cnt, nbrs),  sorted
+    // stack<unordered_map<VertexID, pair<ui, VertexID*>>*>* cached_uv_nbrs_;
     stack<vector<VertexID>> influenced_u_;  // influenced nodes in each layer, src_u is 1'th
     BatchInfo* batch_info;  // array[q_num], use uid as idx, because u may be grouped multi-times
     bool* visited_u;
@@ -125,6 +254,7 @@ public:
         num_cover_ = num_cover;
         auto qnum = q_graph->getVerticesCount();
         auto dnum = d_graph->getVerticesCount();
+        auto num_indep = qnum - num_cover;
         index_ = new stack<Edges*>*[qnum];
         batch_info = new BatchInfo[qnum];
         visited_u = new bool[qnum];
@@ -146,9 +276,8 @@ public:
             // 4 parts: up-down,up-x,x-down,x-x
             sep_flag_[i] = new ui[3];
         }
-        max_can_num_ = 0;
+        // cached_uv_nbrs_ = new stack<unordered_map<VertexID, pair<ui, VertexID*>>*>[qnum];
         for (ui i = 0; i < qnum; i++) {  // i->id of u
-            if (max_can_num_ < cans_cnt[i]) max_can_num_ = cans_cnt[i];
             index_[i] = new stack<Edges*>[qnum];
             for (ui j = 0; j < qnum; j++) {  // j->id of nbrs, no-nullptr->edge exists
                 if (index[i][j] != nullptr) index_[i][j].push(index[i][j]);
@@ -157,6 +286,7 @@ public:
             valid_cnt_[i].push(cans_cnt[i]);
             index_cans_[i] = cans[i];
             index_cnt_[i] = cans_cnt[i];
+            // cached_uv_nbrs_[i].push(nullptr);
         }
         mpz_init(level_embeddings_);
         mpz_init(label_embeddings_);
@@ -200,7 +330,7 @@ public:
     // get Neighbors of v(can of u_1) from u_1 to u_2
     // used to generate valid cans, by union nbrs, 24-3-7
     const VertexID* getNeighbors(VertexID u_1, VertexID u_2, VertexID v, ui& nbrs_cnt) {
-        auto v_idx = b_search<ui*>::search(index_cans_[u_1], index_cnt_[u_1], v);
+        auto v_idx = b_search::search(index_cans_[u_1], index_cnt_[u_1], v);
         if (v_idx == (ui)-1) {
             cout << "can't find " << v << " in index_cans_[" << u_1 << "]: ";
             for (ui i = 0; i < index_cnt_[u_1]; i++) cout << index_cans_[u_1][i] << ", ";
@@ -215,14 +345,20 @@ public:
     // get all Neighbors(valid) of can_v of u, sorted
     // used to seperate nodes, 24-3-7
     VertexID* getNeighbors(VertexID u, VertexID v, ui& nbrs_cnt) {
+        // if (cached_uv_nbrs_[u].top() != nullptr) {
+        //     auto nbrs_iter = cached_uv_nbrs_[u].top()->find(v);
+        //     if (nbrs_iter != cached_uv_nbrs_[u].top()->end()) {
+        //         nbrs_cnt = nbrs_iter->second.first;
+        //         return nbrs_iter->second.second;
+        //     }
+        // }
         ui unbrs_cnt;
         set<VertexID> nbrs;
         auto unbrs = q_graph_->getVertexNeighbors(u, unbrs_cnt);
         for (ui i = 0; i < unbrs_cnt; i++ ) {
             auto& edges = *(index_[u][unbrs[i]].top());
-            auto v_idx = b_search<ui*>::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
+            auto v_idx = b_search::search(valid_cans_[u].top(), valid_cnt_[u].top(), v);
             if (v_idx == (ui)-1) {
-                cout << "BSXIndex::getNeighbors_uv::v_idx == (ui)-1" << endl;
                 exit(1);
             }
             for (ui k = edges.offset_[v_idx]; k < edges.offset_[v_idx+1]; k++) {
@@ -233,17 +369,21 @@ public:
         VertexID* nbrs_ptr = new ui[nbrs_cnt];
         ui nbr_idx = 0;
         for (auto& nbr : nbrs) nbrs_ptr[nbr_idx++] = nbr;
+        // // cache the result
+        // if (cached_uv_nbrs_[u].top() == nullptr) {
+        //     cached_uv_nbrs_[u].top() = new unordered_map<VertexID, pair<ui, VertexID*>>;
+        // }
+        // cached_uv_nbrs_[u].top()->emplace(v, make_pair(nbrs_cnt, nbrs_ptr));
         return nbrs_ptr;
     }
 
     /**update the structure, check nothing
      * based on new valid_cans, valid_cnt & influneced
     */
-    ui updateIndex(bool* influenced, VertexID cur_u) {
+    ui updateIndex(bool* influenced) {
         auto q_num = q_graph_->getVerticesCount();
         bool* nbr_updated = new bool[q_num];
-        std::copy(visited_u, visited_u+q_num, nbr_updated);
-        nbr_updated[cur_u] = false;
+        memset(nbr_updated, false, sizeof(bool)*q_num);
         ui* cans_idx = new ui[d_graph_->getVerticesCount()];
         memset(cans_idx, 0, sizeof(ui)*d_graph_->getVerticesCount());
         vector<VertexID> updated_cans_idx;  // used to recover cans_idx
@@ -320,6 +460,17 @@ public:
                     u2nbr_edges->offset_[j] = u2nbr_edges->offset_[j - 1];
                 }
                 u2nbr_edges->offset_[0] = 0;
+
+                // shrink edges, based on offset
+                // can't shrink infact, because it may due to cascade reaction.
+                //    if valid_cans change(indep node didn't propagate), then update its nbrs
+                // if we just change u side, then cascade reaction won't happen
+                //   This will work because the nbrs side will not be influenced if u is changed
+                //   And benefited from the storage of VertexID in edges instead of v_idx, we
+                //   do not need to update the edges.edge_ of nbrs&u
+                // But, if valid_cans of u is changed, we need to re-compute its all nbrs
+                //   as a final method, run some tests if there are enough time, 24-4-5
+                //   TODO: write delete method and do tests
 
                 // add new edges(nbrs info)
                 index_[nbr][u].push(nbr2u_edges);
