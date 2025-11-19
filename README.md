@@ -47,7 +47,7 @@ For the Peak Memory Consumption experiment, keep only the corresponding combinat
 
 ### Global (Fig. 11)
 
-Use `global.cpp`. Based on **Overall**, we change `query_num` to 8; query IDs are 1–8.
+use `global.cpp` (not `overall.sh`) and to set `num = 8` (query IDs 1–8).
 
 **conf** is the same as **Overall**, except remove *RMRMRM* from `wanted.txt`.
 
