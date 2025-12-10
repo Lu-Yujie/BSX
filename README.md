@@ -107,3 +107,5 @@ tar -xJf dataset_BSX.tar.xz
 ```
 
 Please switch to the **multiple** branch for more experimental details.
+
+> Special thanks to Review #36B of sigmod25ari for the suggestions for improvement.
